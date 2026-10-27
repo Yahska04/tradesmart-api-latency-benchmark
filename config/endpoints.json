@@ -1,0 +1,1441 @@
+{
+  "schema_version": 1,
+  "source": "https://apidocs.tradesmartonline.in/v2/",
+  "checked_at": "2026-10-16",
+  "base_url": "https://v2api.tradesmartonline.in/NorenWClientAPIv2",
+  "ws_url": "wss://v2api.tradesmartonline.in/NorenWSAPI/",
+  "oauth_authorize_url": "https://v2api.tradesmartonline.in/OAuthlogin/authorize/oauth?client_id={{APP_KEY}}",
+  "request_encoding": "jData",
+  "request_encoding_notes": "Every call is HTTP POST with a raw-text body 'jData=' + JSON object. No Content-Type header required. Header 'Authorization: Bearer <access_token>' on all endpoints except GenAcsTok.",
+  "response_conventions": "JSON; check stat (Ok / Not_Ok) first; emsg present when Not_Ok; request_time when returned. Business errors often arrive with HTTP 200. 401/403 = missing/invalid Bearer token; 429 = too many requests.",
+  "rate_limits": [
+    {
+      "applies_to": [
+        "PlaceOrder",
+        "PlaceMultiOrder"
+      ],
+      "per_second": 30,
+      "per_minute": 600
+    },
+    {
+      "applies_to": [
+        "TPSeries"
+      ],
+      "per_second": 100,
+      "per_minute": 1000
+    },
+    {
+      "applies_to": [
+        "GetQuotes",
+        "GetQuotesMultiple"
+      ],
+      "per_second": 100,
+      "per_minute": 1000
+    }
+  ],
+  "rate_limit_notes": "Per official #rate-limits: all other REST APIs have no rate limit (still avoid unnecessary polling). PlaceMultiOrder is named only in the rate-limit section and has no reference page. WebSocket: max 1,000 subscriptions per user / connection.",
+  "endpoints": [
+    {
+      "id": "UserDetails",
+      "name": "User Details",
+      "category": "Authentication",
+      "method": "POST",
+      "path": "/UserDetails",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}"
+      },
+      "response_format": "JSON object: stat (Ok/Not_Ok), exarr, orarr, prarr, brkname, brnchid, email, actid, uid, m_num, access_type, request_time (success only), emsg (errors only).",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#login---user-details-user-details",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Recommended first authenticated call to verify connectivity."
+    },
+    {
+      "id": "GenAcsTok",
+      "name": "Generate Access Token",
+      "category": "Authentication",
+      "method": "POST",
+      "path": "/GenAcsTok",
+      "auth_required": false,
+      "required_headers": [],
+      "params": [
+        {
+          "name": "code",
+          "type": "string",
+          "required": true,
+          "description": "One-time authorization code from the OAuth redirect URL.",
+          "example": null
+        },
+        {
+          "name": "checksum",
+          "type": "string",
+          "required": true,
+          "description": "SHA-256 hex of App Key + Secret Key + code concatenated with no separators.",
+          "example": null
+        }
+      ],
+      "request_body_template": {
+        "code": "{{code}}",
+        "checksum": "{{checksum}}"
+      },
+      "response_format": "JSON object: stat, access_token, USERID, actid, uname, exarr, prarr, email, brkname, uid, ... (sample success also shows expires_in, refresh_token, scope); on failure stat=Not_Ok + emsg.",
+      "safety_class": "special_setup",
+      "requires_fixture": true,
+      "fixture_notes": "Requires a fresh one-time OAuth code from https://v2api.tradesmartonline.in/OAuthlogin/authorize/oauth?client_id=<APP_KEY>; a code works for a single token exchange.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#login---user-details-generate-access-token",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Only endpoint without the Bearer header. One-time code exchange: never auto-benchmarked."
+    },
+    {
+      "id": "PlaceOrder",
+      "name": "Place Order",
+      "category": "Orders",
+      "method": "POST",
+      "path": "/PlaceOrder",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange (NSE / NFO / BSE / BFO / MCX); select from exarr in UserDetails response.",
+          "example": "NSE"
+        },
+        {
+          "name": "tsym",
+          "type": "string",
+          "required": true,
+          "description": "Trading symbol of the contract (URL-encode special chars, e.g. M&M).",
+          "example": "INFY-EQ"
+        },
+        {
+          "name": "qty",
+          "type": "string",
+          "required": true,
+          "description": "Order quantity (numeric).",
+          "example": "1"
+        },
+        {
+          "name": "prc",
+          "type": "string",
+          "required": true,
+          "description": "Order price (numeric).",
+          "example": "1584.5"
+        },
+        {
+          "name": "trgprc",
+          "type": "string",
+          "required": false,
+          "description": "Trigger price; only for SL / SL-M orders.",
+          "example": null
+        },
+        {
+          "name": "dscqty",
+          "type": "string",
+          "required": true,
+          "description": "Disclosed quantity (max 10% NSE, 50% MCX).",
+          "example": "0"
+        },
+        {
+          "name": "prd",
+          "type": "string",
+          "required": true,
+          "description": "Product: C - CNC / M - NRML / H - CO / B - BO / I - MIS / F - MTF (select from prarr in UserDetails).",
+          "example": "C"
+        },
+        {
+          "name": "trantype",
+          "type": "string",
+          "required": true,
+          "description": "B = Buy, S = Sell.",
+          "example": "B"
+        },
+        {
+          "name": "prctyp",
+          "type": "string",
+          "required": true,
+          "description": "Price type: LMT / MKT / SL-MKT / SL-LMT.",
+          "example": "LMT"
+        },
+        {
+          "name": "ret",
+          "type": "string",
+          "required": true,
+          "description": "Retention: DAY / EOS / IOC.",
+          "example": "DAY"
+        },
+        {
+          "name": "remarks",
+          "type": "string",
+          "required": false,
+          "description": "Any tag by user to mark order.",
+          "example": null
+        },
+        {
+          "name": "ordersource",
+          "type": "string",
+          "required": false,
+          "description": "Order source; documented value API.",
+          "example": "API"
+        },
+        {
+          "name": "bpprc",
+          "type": "string",
+          "required": false,
+          "description": "Book profit price; only for product B (bracket).",
+          "example": null
+        },
+        {
+          "name": "blprc",
+          "type": "string",
+          "required": false,
+          "description": "Book loss price; only for product H and B.",
+          "example": null
+        },
+        {
+          "name": "trailprc",
+          "type": "string",
+          "required": false,
+          "description": "Trailing price; only for product H and B.",
+          "example": null
+        },
+        {
+          "name": "amo",
+          "type": "string",
+          "required": false,
+          "description": "Docs table marks this 'Required' with value Yes, but also says: if AMO is not required, do not send this field.",
+          "example": "Yes"
+        },
+        {
+          "name": "tsym2",
+          "type": "string",
+          "required": false,
+          "description": "Second-leg trading symbol (price type 2L/3L).",
+          "example": null
+        },
+        {
+          "name": "trantype2",
+          "type": "string",
+          "required": false,
+          "description": "Second-leg transaction type (2L/3L).",
+          "example": null
+        },
+        {
+          "name": "qty2",
+          "type": "string",
+          "required": false,
+          "description": "Second-leg quantity (2L/3L).",
+          "example": null
+        },
+        {
+          "name": "prc2",
+          "type": "string",
+          "required": false,
+          "description": "Second-leg price (2L/3L).",
+          "example": null
+        },
+        {
+          "name": "tsym3",
+          "type": "string",
+          "required": false,
+          "description": "Third-leg trading symbol (3L).",
+          "example": null
+        },
+        {
+          "name": "trantype3",
+          "type": "string",
+          "required": false,
+          "description": "Third-leg transaction type (3L).",
+          "example": null
+        },
+        {
+          "name": "qty3",
+          "type": "string",
+          "required": false,
+          "description": "Third-leg quantity (3L).",
+          "example": null
+        },
+        {
+          "name": "prc3",
+          "type": "string",
+          "required": false,
+          "description": "Third-leg price (3L).",
+          "example": null
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "tsym": "{{tsym}}",
+        "qty": "{{qty}}",
+        "prc": "{{prc}}",
+        "dscqty": "{{dscqty}}",
+        "prd": "{{prd}}",
+        "trantype": "{{trantype}}",
+        "prctyp": "{{prctyp}}",
+        "ret": "{{ret}}",
+        "ordersource": "API"
+      },
+      "response_format": "JSON object: stat (Ok/Not_Ok), request_time, norenordno (only on successful placement to OMS), emsg (on failure).",
+      "safety_class": "state_changing",
+      "requires_fixture": true,
+      "fixture_notes": "Places a real order. Only in a documented safe test environment with explicit test mode and user confirmation.",
+      "rate_limit_per_sec": 30,
+      "rate_limit_per_min": 600,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#placeorder-place-order",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). 8 documented variants (Regular LMT/SL-LMT, Cover LMT/MKT/SL-LMT, Bracket LMT/MKT/SL-LMT) share this endpoint; only request fields differ (e.g. blprc for cover; blprc/bpprc/trailprc for bracket; mkt_protection appears in the Bracket MKT sample). Ack (norenordno) means accepted by OMS, not filled. NEVER auto-execute."
+    },
+    {
+      "id": "GetOrderMargin",
+      "name": "Order Margin",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/GetOrderMargin",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange (NSE / NFO / BSE / BFO / MCX); select from exarr in UserDetails response.",
+          "example": "NSE"
+        },
+        {
+          "name": "tsym",
+          "type": "string",
+          "required": true,
+          "description": "Trading symbol of the contract (URL-encode special chars, e.g. M&M).",
+          "example": "INFY-EQ"
+        },
+        {
+          "name": "qty",
+          "type": "string",
+          "required": true,
+          "description": "Order quantity (numeric).",
+          "example": "1"
+        },
+        {
+          "name": "prc",
+          "type": "string",
+          "required": true,
+          "description": "Order price (numeric).",
+          "example": "1584.5"
+        },
+        {
+          "name": "trgprc",
+          "type": "string",
+          "required": false,
+          "description": "Trigger price; only for SL / SL-M orders.",
+          "example": null
+        },
+        {
+          "name": "prd",
+          "type": "string",
+          "required": true,
+          "description": "Product: C - CNC / M - NRML / H - CO / B - BO / I - MIS / F - MTF (select from prarr in UserDetails).",
+          "example": "C"
+        },
+        {
+          "name": "trantype",
+          "type": "string",
+          "required": true,
+          "description": "B = Buy, S = Sell.",
+          "example": "B"
+        },
+        {
+          "name": "prctyp",
+          "type": "string",
+          "required": true,
+          "description": "Price type: LMT / SL-LMT.",
+          "example": "LMT"
+        },
+        {
+          "name": "blprc",
+          "type": "string",
+          "required": false,
+          "description": "Book loss price; only for product H and B.",
+          "example": null
+        },
+        {
+          "name": "norenordno",
+          "type": "string",
+          "required": false,
+          "description": "Only for H or B order modification.",
+          "example": null
+        },
+        {
+          "name": "snonum",
+          "type": "string",
+          "required": false,
+          "description": "Only for H or B order modification.",
+          "example": null
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "tsym": "{{tsym}}",
+        "qty": "{{qty}}",
+        "prc": "{{prc}}",
+        "prd": "{{prd}}",
+        "trantype": "{{trantype}}",
+        "prctyp": "{{prctyp}}"
+      },
+      "response_format": "JSON object: stat, request_time, remarks (success only), cash, marginused, ordermargin, marginusedprev; emsg on failure.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "Needs a user-supplied instrument and hypothetical order values (exch, tsym, qty, prc, prd, trantype, prctyp).",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-getordermargin",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Path is /GetOrderMargin (local summary said /OrderMargin). Docs: calculates margin requirements, brokerage charges and leverage before placing orders; it does not place an order. The docs/Postman sample body also sends rorgqty and rorgprc ('0'), which are not in the field table. Not pre-selected by default: although read-only (margin calculation only), its body carries order-shaped fields (exch/tsym/qty/prc/trantype); review the values before opting in."
+    },
+    {
+      "id": "OrderBook",
+      "name": "Order Book",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/OrderBook",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}"
+      },
+      "response_format": "JSON array of order objects (stat, norenordno, exch, tsym, qty, prc, prd, status, trantype, prctyp, fillshares, avgprc, rejreason, ...) when orders exist; JSON object {stat: Not_Ok, emsg} on error.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-orderbook",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Field table marks uid and actid Required; the docs' example payload sends only uid."
+    },
+    {
+      "id": "SingleOrdHist",
+      "name": "Order History",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/SingleOrdHist",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "norenordno",
+          "type": "string",
+          "required": true,
+          "description": "Noren order number.",
+          "example": "{{norenordno}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "norenordno": "{{norenordno}}"
+      },
+      "response_format": "JSON array of order-history entries (same fields as OrderBook) on success; {stat: Not_Ok, emsg: 'Error Occurred : 5 \"no data\"'} when nothing is found.",
+      "safety_class": "read_only",
+      "requires_fixture": true,
+      "fixture_notes": "Needs an existing norenordno from this account (e.g. from OrderBook).",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-singleordhist",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Read-only, but disabled by default until the user supplies a valid norenordno."
+    },
+    {
+      "id": "TradeBook",
+      "name": "Trade Book",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/TradeBook",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}"
+      },
+      "response_format": "JSON array of trades (uid, actid, exch, tsym, norenordno, qty, fillshares, avgprc, fltm, flid, flqty, flprc, ...) when trades exist; {stat: Not_Ok, emsg: 'Error Occurred : 5 \"no data\"'} when there are none.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-tradebook",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Docs show the 'no data' Not_Ok as a 200 response; treat it as an empty dataset, not a failure."
+    },
+    {
+      "id": "PositionBook",
+      "name": "Position Book",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/PositionBook",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}"
+      },
+      "response_format": "JSON array of positions (exch, tsym, token, prd, netqty, netavgprc, daybuyqty, daysellqty, rpnl, lp, ...) when positions exist; {stat: Not_Ok, emsg: 'Error Occurred : 5 \"no data\"'} when there are none.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-positionbook",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16)."
+    },
+    {
+      "id": "ExitSNOOrder",
+      "name": "Exit Cover / Bracket Order",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/ExitSNOOrder",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "prd",
+          "type": "string",
+          "required": true,
+          "description": "Product type: H = Cover Order, B = Bracket Order.",
+          "example": "H"
+        },
+        {
+          "name": "norenordno",
+          "type": "string",
+          "required": true,
+          "description": "Noren order number of the SNO leg to exit.",
+          "example": "{{norenordno}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "prd": "{{prd}}",
+        "norenordno": "{{norenordno}}"
+      },
+      "response_format": "JSON object: stat, dmsg (success only), request_time, emsg (failure only).",
+      "safety_class": "state_changing",
+      "requires_fixture": true,
+      "fixture_notes": "Needs an open Cover/Bracket SNO leg (norenordno). Exits a live position leg.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-exit-sno-order",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Official path is /ExitSNOOrder (local summary wrote /ExitSnoOrder). NEVER auto-execute."
+    },
+    {
+      "id": "CancelOrder",
+      "name": "Cancel Order",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/CancelOrder",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "norenordno",
+          "type": "string",
+          "required": true,
+          "description": "Noren order number of the order to cancel.",
+          "example": "{{norenordno}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "norenordno": "{{norenordno}}"
+      },
+      "response_format": "JSON object: stat (Ok = acknowledged only), dmsg (success only), request_time, emsg (failure only).",
+      "safety_class": "state_changing",
+      "requires_fixture": true,
+      "fixture_notes": "Needs an open order (norenordno). Cancels a real order.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-cancel-order",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Ok is only an acknowledgement; confirm with SingleOrdHist. NEVER auto-execute."
+    },
+    {
+      "id": "ModifyOrder",
+      "name": "Modify Order",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/ModifyOrder",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange (NSE / NFO / BSE / BFO / MCX); select from exarr in UserDetails response.",
+          "example": "NSE"
+        },
+        {
+          "name": "norenordno",
+          "type": "string",
+          "required": true,
+          "description": "Noren order number to modify.",
+          "example": "{{norenordno}}"
+        },
+        {
+          "name": "tsym",
+          "type": "string",
+          "required": true,
+          "description": "Trading symbol of the contract (URL-encode special chars, e.g. M&M).",
+          "example": "INFY-EQ"
+        },
+        {
+          "name": "qty",
+          "type": "string",
+          "required": true,
+          "description": "Order quantity (numeric).",
+          "example": "1"
+        },
+        {
+          "name": "prc",
+          "type": "string",
+          "required": true,
+          "description": "Order price (numeric).",
+          "example": "1584.5"
+        },
+        {
+          "name": "trgprc",
+          "type": "string",
+          "required": false,
+          "description": "Trigger price; only for SL / SL-M orders.",
+          "example": null
+        },
+        {
+          "name": "prd",
+          "type": "string",
+          "required": true,
+          "description": "Product: C - CNC / M - NRML / H - CO / B - BO / I - MIS / F - MTF (select from prarr in UserDetails).",
+          "example": "C"
+        },
+        {
+          "name": "prctyp",
+          "type": "string",
+          "required": true,
+          "description": "Price type: LMT / SL-LMT.",
+          "example": "LMT"
+        },
+        {
+          "name": "ret",
+          "type": "string",
+          "required": false,
+          "description": "Retention: DAY / EOS / IOC.",
+          "example": "DAY"
+        },
+        {
+          "name": "remarks",
+          "type": "string",
+          "required": false,
+          "description": "Any tag by user to mark order.",
+          "example": null
+        },
+        {
+          "name": "ordersource",
+          "type": "string",
+          "required": false,
+          "description": "Order source; documented value API.",
+          "example": "API"
+        },
+        {
+          "name": "bpprc",
+          "type": "string",
+          "required": false,
+          "description": "Book profit price; only for product B (bracket).",
+          "example": null
+        },
+        {
+          "name": "blprc",
+          "type": "string",
+          "required": false,
+          "description": "Book loss price; only for product H and B.",
+          "example": null
+        },
+        {
+          "name": "trailprc",
+          "type": "string",
+          "required": false,
+          "description": "Trailing price; only for product H and B.",
+          "example": null
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "norenordno": "{{norenordno}}",
+        "tsym": "{{tsym}}",
+        "qty": "{{qty}}",
+        "prc": "{{prc}}",
+        "prd": "{{prd}}",
+        "prctyp": "{{prctyp}}"
+      },
+      "response_format": "JSON object: stat, request_time, norenordno (on success), emsg (on failure).",
+      "safety_class": "state_changing",
+      "requires_fixture": true,
+      "fixture_notes": "Needs an open order (norenordno). Modifies a real order.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#ordersandtrades-modify-order",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). The docs' sample body also sends dscqty, trantype, ret, ordersource, which the field table lists only partially. Ack means accepted by OMS; confirm with SingleOrdHist. NEVER auto-execute."
+    },
+    {
+      "id": "Holdings",
+      "name": "Holdings",
+      "category": "Holdings & Limits",
+      "method": "POST",
+      "path": "/Holdings",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "prd",
+          "type": "string",
+          "required": true,
+          "description": "Product name; documented possible value: C.",
+          "example": "C"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}",
+        "prd": "C"
+      },
+      "response_format": "Holdings records: stat, exch_tsym (array of {exch, tsym, token, pp, ti, ls, lp, cname, dname}), holdqty, dpqty, npoadqty, brkcolqty, colqty, benqty, unplgdqty, btstqty, btstcolqty, usedqty, upldprc.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#holdingsandlimits-holdings",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). The Holdings page publishes no example responses, so the empty-account response shape is not documented."
+    },
+    {
+      "id": "Limits",
+      "name": "Limits",
+      "category": "Holdings & Limits",
+      "method": "POST",
+      "path": "/Limits",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "actid",
+          "type": "string",
+          "required": true,
+          "description": "Account ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}"
+      },
+      "response_format": "JSON object: stat, request_time, prfname, actid, prd, seg, exch, cash, payin, payout, brkcollamt, unclearedcash, daycash, marginused, mtomcurper, cbu, csc, rpnl, unmtom, span, expo, ...; emsg on error.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#holdingsandlimits-limits",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16)."
+    },
+    {
+      "id": "SearchScrip",
+      "name": "Search Scrip",
+      "category": "Scrips",
+      "method": "POST",
+      "path": "/SearchScrip",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "stext",
+          "type": "string",
+          "required": true,
+          "description": "Search text.",
+          "example": "{{searchtext}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "stext": "{{searchtext}}"
+      },
+      "response_format": "JSON object: stat, values (array of {exch, tsym, token, pp, ti, ls, weekly, nontrd, dname, cname, optt, instname, symname, seg, exd}); emsg on error (sample: 404 {stat: Not_Ok, emsg: 'No Data : '}).",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies a search string (e.g. an instrument name).",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#scrips-search-script",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Request field is stext (placeholder {{searchtext}})."
+    },
+    {
+      "id": "GetQuotes",
+      "name": "Get Quotes",
+      "category": "Scrips",
+      "method": "POST",
+      "path": "/GetQuotes",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "required": true,
+          "description": "Contract token.",
+          "example": "{{token}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange.",
+          "example": "{{exch}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "token": "{{token}}"
+      },
+      "response_format": "JSON object: stat, request_time, exch, tsym, pp, ls, ti, lp, uc, lc, o, h, l, c, v, ap, ltq, ltt, bp1-bp5/sp1-sp5/bq1-bq5/sq1-sq5, ...; {stat: Not_Ok, emsg: 'Error Occurred : 5 \"no data\"'} when not found.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies an exch/token pair (resolve from Script Master or SearchScrip).",
+      "rate_limit_per_sec": 100,
+      "rate_limit_per_min": 1000,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#scrips-get-quotes",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Field table says token = contract token, but the docs/Postman sample sends token 'TCS-EQ' (a trading symbol); use a numeric token from Script Master to be safe."
+    },
+    {
+      "id": "GetQuotesMultiple",
+      "name": "Get Quotes (Multiple)",
+      "category": "Scrips",
+      "method": "POST",
+      "path": "/GetQuotesMultiple",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}"
+      },
+      "response_format": "Not documented.",
+      "safety_class": "read_only",
+      "requires_fixture": true,
+      "fixture_notes": "Request schema for multiple instruments is not documented; user must supply the body fields.",
+      "rate_limit_per_sec": 100,
+      "rate_limit_per_min": 1000,
+      "benchmark_enabled": false,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#rate-limits",
+      "notes": "Request fields not confirmed from official docs; verify before use. The official site mentions /GetQuotesMultiple only in the Rate Limits section (no reference page, not in the Postman collection); the local summary lists it without fields. Only uid is included; disabled by default until the user provides the documented instrument fields."
+    },
+    {
+      "id": "GetSecurityInfo",
+      "name": "Security Info",
+      "category": "Scrips",
+      "method": "POST",
+      "path": "/GetSecurityInfo",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "required": true,
+          "description": "Contract token.",
+          "example": "{{token}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange.",
+          "example": "{{exch}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "token": "{{token}}"
+      },
+      "response_format": "JSON object: stat, request_time, exch, tsym, cname, symnam, seg, exd, instname, strprc, optt, isin, ti, ls, pp, mult, margins (elmbmrg, varmrg, expmrg, ...), token, uc, lc, ...; failure e.g. 400 {stat: Not_Ok, emsg: 'Invalid Input : Invalid Scrip token/exch'}.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies an exch/token pair (docs sample: NSE / 11536).",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#scrips-security-info",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16)."
+    },
+    {
+      "id": "GetOptionChain",
+      "name": "Option Chain",
+      "category": "Scrips",
+      "method": "POST",
+      "path": "/GetOptionChain",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "tsym",
+          "type": "string",
+          "required": true,
+          "description": "Trading symbol of any option or future; chain for its underlying is returned (URL-encode e.g. M&M).",
+          "example": "{{tsym}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange with options, e.g. NFO / CDS / MCX.",
+          "example": "{{exch}}"
+        },
+        {
+          "name": "strprc",
+          "type": "string",
+          "required": true,
+          "description": "Mid price for option chain selection.",
+          "example": "{{strprc}}"
+        },
+        {
+          "name": "cnt",
+          "type": "string",
+          "required": true,
+          "description": "Number of strikes on one side of mid price for PUT and CALL (cnt 4 -> 16 contracts).",
+          "example": "{{cnt}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "tsym": "{{tsym}}",
+        "exch": "{{exch}}",
+        "strprc": "{{strprc}}",
+        "cnt": "{{cnt}}"
+      },
+      "response_format": "JSON object: stat, values (array of {exch, tsym, token, optt, strprc, pp, ti, ls}); emsg on error.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies a current (non-expired) F&O tsym, its exch, a mid strike price and count.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#scrips-getoptionchain",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). The 'Example jData payload' under the field table is inconsistent (token, no exch); the Request Body sample and Postman use tsym/strprc/exch/cnt, matching the field table."
+    },
+    {
+      "id": "TPSeries",
+      "name": "Time Price Data",
+      "category": "Market Info",
+      "method": "POST",
+      "path": "/TPSeries",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "uid",
+          "type": "string",
+          "required": true,
+          "description": "User ID of the logged-in user (Client ID).",
+          "example": "{{ClientId}}"
+        },
+        {
+          "name": "token",
+          "type": "string",
+          "required": true,
+          "description": "Contract token.",
+          "example": "{{token}}"
+        },
+        {
+          "name": "exch",
+          "type": "string",
+          "required": true,
+          "description": "Exchange.",
+          "example": "{{exch}}"
+        },
+        {
+          "name": "st",
+          "type": "string",
+          "required": false,
+          "description": "Start time (epoch seconds).",
+          "example": "{{st}}"
+        },
+        {
+          "name": "et",
+          "type": "string",
+          "required": false,
+          "description": "End time (epoch seconds).",
+          "example": "{{et}}"
+        },
+        {
+          "name": "intrv",
+          "type": "string",
+          "required": false,
+          "description": "Candle size in minutes: 1, 3, 5, 10, 15, 30, 60, 120, 240 (default 1).",
+          "example": "{{intrv}}"
+        }
+      ],
+      "request_body_template": {
+        "uid": "{{ClientId}}",
+        "exch": "{{exch}}",
+        "token": "{{token}}",
+        "st": "{{st}}",
+        "et": "{{et}}",
+        "intrv": "{{intrv}}"
+      },
+      "response_format": "JSON array of candles {stat, time, ssboe, into, inth, intl, intc, intvwap, intv, v, intoi, oi}; {stat: Not_Ok, emsg: 'Error Occurred : 5 \"no data\"'} when no data.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies exch/token and a bounded st/et range within the exchange's history window (NSE/BSE 360 days, MCX 70, NFO/BFO/CDS/BCD 65).",
+      "rate_limit_per_sec": 100,
+      "rate_limit_per_min": 1000,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#marketinfo-time-price-data",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). st/et/intrv are optional per docs but templated so benchmark payload size stays fixed. Docs sample sends token 'INFY' for BSE although the field is described as contract token."
+    },
+    {
+      "id": "EODChartData",
+      "name": "Historical Data",
+      "category": "Market Info",
+      "method": "POST",
+      "path": "/EODChartData",
+      "auth_required": true,
+      "required_headers": [
+        "Authorization: Bearer <access_token>"
+      ],
+      "params": [
+        {
+          "name": "sym",
+          "type": "string",
+          "required": true,
+          "description": "Symbol name as EXCH:TSYM (docs samples: 'BSE:SBIN', 'NSE:SBIN-EQ').",
+          "example": "{{sym}}"
+        },
+        {
+          "name": "from",
+          "type": "string",
+          "required": true,
+          "description": "From date (epoch seconds in docs sample).",
+          "example": "{{from}}"
+        },
+        {
+          "name": "to",
+          "type": "string",
+          "required": true,
+          "description": "To date (epoch seconds in docs sample).",
+          "example": "{{to}}"
+        }
+      ],
+      "request_body_template": {
+        "sym": "{{sym}}",
+        "from": "{{from}}",
+        "to": "{{to}}"
+      },
+      "response_format": "JSON array of JSON-encoded strings, each a daily candle {time, into, inth, intl, intc, ssboe, intv}; empty array [] when no data.",
+      "safety_class": "read_only",
+      "requires_fixture": false,
+      "fixture_notes": "User supplies sym (EXCH:TSYM) and a from/to range within the history window.",
+      "rate_limit_per_sec": null,
+      "rate_limit_per_min": null,
+      "benchmark_enabled": true,
+      "doc_reference": "https://apidocs.tradesmartonline.in/v2/#marketinfo-historical-data",
+      "notes": "Source: official docs (apidocs.tradesmartonline.in/v2, checked 2026-10-16). Request has no uid field per docs. Bearer token still required."
+    }
+  ],
+  "websocket": {
+    "url": "wss://v2api.tradesmartonline.in/NorenWSAPI/",
+    "doc_reference": "https://apidocs.tradesmartonline.in/v2/#websocket",
+    "message_format": "JSON for all input and output messages",
+    "scrip_key_format": "EXCH|TOKEN, multiple joined with '#', e.g. NSE|22#BSE|508123",
+    "subscription_limit": 1000,
+    "ato_price_marker": "42949672.95",
+    "connect": {
+      "request": {
+        "t": "a",
+        "uid": "{{ClientId}}",
+        "actid": "{{ClientId}}",
+        "source": "API",
+        "accesstoken": "{{access_token}}"
+      },
+      "ack": {
+        "t": "ak",
+        "fields": [
+          "uid",
+          "s"
+        ],
+        "success": "s == 'Ok'",
+        "failure": "s == 'Not_Ok' if user ID or session is invalid"
+      },
+      "notes": "Send immediately after the socket opens. source should match the login request (WEB / MOB / API)."
+    },
+    "feeds": [
+      {
+        "name": "touchline",
+        "subscribe": {
+          "t": "t",
+          "k": "{{scrip_keys}}"
+        },
+        "ack": "tk",
+        "feed": "tf",
+        "unsubscribe": {
+          "t": "u",
+          "k": "{{scrip_keys}}"
+        },
+        "unsubscribe_ack": "uk",
+        "notes": "One tk ack per scrip in k. tf carries t, e, tk plus only changed fields (lp, pc, v, o, h, l, c, ap, oi, poi, toi, bq1, bp1, sq1, sp1, ft)."
+      },
+      {
+        "name": "depth",
+        "subscribe": {
+          "t": "d",
+          "k": "{{scrip_keys}}"
+        },
+        "ack": "dk",
+        "feed": "df",
+        "unsubscribe": {
+          "t": "ud",
+          "k": "{{scrip_keys}}"
+        },
+        "unsubscribe_ack": "udk",
+        "notes": "One dk ack per scrip with LTP/OHLC and 5-level book; df sends only changed fields plus t, e, tk."
+      },
+      {
+        "name": "order_update",
+        "subscribe": {
+          "t": "o",
+          "actid": "{{ClientId}}"
+        },
+        "ack": null,
+        "feed": "om",
+        "unsubscribe": {
+          "t": "uo"
+        },
+        "unsubscribe_ack": "uok",
+        "notes": "No subscription acknowledgement; feeds arrive as t=om."
+      },
+      {
+        "name": "position_update",
+        "subscribe": {
+          "t": "p",
+          "uid": "{{ClientId}}"
+        },
+        "ack": "pk",
+        "feed": "pm",
+        "unsubscribe": {
+          "t": "up"
+        },
+        "unsubscribe_ack": "upk",
+        "notes": "Ack pk includes uid."
+      }
+    ],
+    "heartbeat": {
+      "request": {
+        "t": "h"
+      },
+      "ack": "hk",
+      "notes": "hk carries ft (timestamp in seconds)."
+    },
+    "heartbeat_seconds": 30,
+    "message_types": {
+      "a": "connect request",
+      "ak": "connect ack",
+      "t": "touchline subscribe",
+      "tk": "touchline ack",
+      "tf": "touchline feed",
+      "u": "unsubscribe touchline",
+      "uk": "unsubscribe touchline ack",
+      "d": "depth subscribe",
+      "dk": "depth ack",
+      "df": "depth feed",
+      "ud": "unsubscribe depth",
+      "udk": "unsubscribe depth ack",
+      "o": "order update subscribe (no ack)",
+      "om": "order update feed",
+      "uo": "unsubscribe order updates",
+      "uok": "unsubscribe order updates ack",
+      "p": "position subscribe",
+      "pk": "position ack",
+      "pm": "position feed",
+      "up": "unsubscribe positions",
+      "upk": "unsubscribe positions ack",
+      "h": "heartbeat",
+      "hk": "heartbeat ack"
+    }
+  },
+  "script_master": [
+    {
+      "exchange": "NSE",
+      "segment": "NSE (Equity)",
+      "url": "https://v2api.tradesmartonline.in/NSE_symbols.txt.zip"
+    },
+    {
+      "exchange": "NFO",
+      "segment": "NSE F&O",
+      "url": "https://v2api.tradesmartonline.in/NFO_symbols.txt.zip"
+    },
+    {
+      "exchange": "BSE",
+      "segment": "BSE (Equity)",
+      "url": "https://v2api.tradesmartonline.in/BSE_symbols.txt.zip"
+    },
+    {
+      "exchange": "BFO",
+      "segment": "BSE F&O",
+      "url": "https://v2api.tradesmartonline.in/BFO_symbols.txt.zip"
+    },
+    {
+      "exchange": "BCD",
+      "segment": "BSE Currency",
+      "url": "https://v2api.tradesmartonline.in/BCD_symbols.txt.zip"
+    },
+    {
+      "exchange": "CDS",
+      "segment": "CDS (Currency)",
+      "url": "https://v2api.tradesmartonline.in/CDS_symbols.txt.zip"
+    },
+    {
+      "exchange": "MCX",
+      "segment": "MCX (Commodity)",
+      "url": "https://v2api.tradesmartonline.in/MCX_symbols.txt.zip"
+    }
+  ]
+}

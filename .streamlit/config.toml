@@ -1,0 +1,33 @@
+# TradeSmart brand theme (docs/TradeSmart_Brandbook.md)
+[theme]
+base = "light"
+primaryColor = "#3F71EB"              # TradeSmart Blue
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#ECF1FD"  # TradeSmart Blue at 10% on white
+textColor = "#151E34"                 # TradeSmart Dark Blue
+linkColor = "#2F5BC9"
+redColor = "#E02B59"
+greenColor = "#00B48E"
+orangeColor = "#EEB268"
+blueColor = "#3F71EB"
+borderColor = "#D9E0EE"
+showWidgetBorder = true
+baseRadius = "6px"
+font = "Trebuchet MS, sans-serif"
+headingFont = "Roboto:https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap"
+headingFontWeights = [700, 700, 500]
+chartCategoricalColors = ["#3F71EB", "#EB6834", "#1BAF7A", "#C98500", "#E87BA4", "#6250D6"]
+
+[theme.sidebar]
+backgroundColor = "#151E34"           # Dark Blue sidebar, white logo variant
+secondaryBackgroundColor = "#222D4A"
+textColor = "#FFFFFF"
+primaryColor = "#8FAAF3"
+borderColor = "#2C385A"
+
+[server]
+headless = true
+address = "localhost"             # local only: never expose benchmark data on the network
+
+[browser]
+gatherUsageStats = false

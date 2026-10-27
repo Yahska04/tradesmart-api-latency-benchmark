@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "source": "https://apidocs.tradesmartonline.in/v2/",
+  "checked_at": "2026-10-16",
+  "base_url": "https://mock.tradesmart.test/NorenWClientAPIv2",
+  "ws_url": "wss://mock.tradesmart.test/NorenWSAPI/",
+  "request_encoding": "jData",
+  "rate_limits": [
+    {"applies_to": ["GetQuotes"], "per_second": 100, "per_minute": 1000}
+  ],
+  "endpoints": [
+    {
+      "id": "UserDetails",
+      "name": "User Details",
+      "category": "Authentication",
+      "method": "POST",
+      "path": "/UserDetails",
+      "auth_required": true,
+      "required_headers": ["Authorization: Bearer <access_token>"],
+      "params": [{"name": "uid", "type": "string", "required": true, "description": "Client id"}],
+      "request_body_template": {"uid": "{{ClientId}}"},
+      "response_format": "JSON object with stat, exarr, prarr",
+      "safety_class": "read_only",
+      "benchmark_enabled": true,
+      "doc_reference": "#7-user-details"
+    },
+    {
+      "id": "Limits",
+      "name": "Limits / Funds",
+      "category": "Holdings & Limits",
+      "method": "POST",
+      "path": "/Limits",
+      "params": [{"name": "uid"}, {"name": "actid"}],
+      "request_body_template": {"uid": "{{ClientId}}", "actid": "{{ClientId}}"},
+      "safety_class": "read_only",
+      "benchmark_enabled": true
+    },
+    {
+      "id": "GetQuotes",
+      "name": "Get Quotes",
+      "category": "Scrips / Market Information",
+      "method": "POST",
+      "path": "/GetQuotes",
+      "params": [{"name": "uid"}, {"name": "exch"}, {"name": "token"}],
+      "request_body_template": {"uid": "{{ClientId}}", "exch": "{{exch}}", "token": "{{token}}"},
+      "safety_class": "read_only",
+      "rate_limit_per_sec": 100,
+      "rate_limit_per_min": 1000,
+      "benchmark_enabled": true
+    },
+    {
+      "id": "OrderBook",
+      "name": "Order Book",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/OrderBook",
+      "request_body_template": {"uid": "{{ClientId}}"},
+      "safety_class": "read_only",
+      "benchmark_enabled": true
+    },
+    {
+      "id": "PlaceOrder",
+      "name": "Place Order",
+      "category": "Orders",
+      "method": "POST",
+      "path": "/PlaceOrder",
+      "request_body_template": {
+        "uid": "{{ClientId}}", "actid": "{{ClientId}}", "exch": "{{exch}}", "tsym": "{{tsym}}",
+        "qty": "{{qty}}", "prc": "{{prc}}", "prd": "{{prd}}", "trantype": "{{trantype}}",
+        "prctyp": "{{prctyp}}", "ret": "{{ret}}"
+      },
+      "safety_class": "state_changing",
+      "rate_limit_per_sec": 30,
+      "rate_limit_per_min": 600,
+      "benchmark_enabled": false,
+      "notes": "Documentation-only; manual latency entry."
+    },
+    {
+      "id": "CancelOrder",
+      "name": "Cancel Order",
+      "category": "Orders & Trades",
+      "method": "POST",
+      "path": "/CancelOrder",
+      "request_body_template": {"uid": "{{ClientId}}", "norenordno": "{{norenordno}}"},
+      "safety_class": "state_changing",
+      "requires_fixture": true,
+      "benchmark_enabled": false
+    },
+    {
+      "id": "GenAcsTok",
+      "name": "Generate Access Token",
+      "category": "Authentication",
+      "method": "POST",
+      "path": "/GenAcsTok",
+      "auth_required": false,
+      "request_body_template": {"code": "{{code}}", "checksum": "{{checksum}}"},
+      "safety_class": "special_setup",
+      "benchmark_enabled": false,
+      "notes": "One-time authorization code exchange."
+    }
+  ],
+  "websocket": {"connect": {"t": "a"}, "feeds": ["t", "d"], "heartbeat_seconds": 30}
+}
