@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value_json TEXT,
     updated_at TEXT
 );
+CREATE TABLE IF NOT EXISTS order_test_orders (
+    norenordno TEXT PRIMARY KEY,
+    run_id TEXT,
+    exch TEXT,
+    tsym TEXT,
+    placed_at TEXT,
+    started_by TEXT,
+    state TEXT NOT NULL DEFAULT 'open',
+    final_status TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_order_test_state ON order_test_orders(state);
 """
 
 
@@ -475,6 +487,30 @@ class Database:
             "SELECT id, run_id, metric, value, recorded_at, detail FROM ws_samples WHERE run_id=? ORDER BY id",
             (run_id,),
         )
+
+    # --------------------------------------------------------- order test journal
+    def record_test_orders(self, rows: Iterable[dict]) -> None:
+        """Journal live test orders the moment they are accepted, so a crash can't lose track of them."""
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO order_test_orders "
+                "(norenordno, run_id, exch, tsym, placed_at, started_by, state, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
+                [(r["norenordno"], r.get("run_id"), r.get("exch"), r.get("tsym"), r.get("placed_at") or now,
+                  r.get("started_by"), now) for r in rows])
+
+    def update_test_order(self, norenordno: str, state: str, final_status: str | None = None) -> None:
+        """``state``: open (not confirmed closed), closed (cancelled/rejected), filled."""
+        with self._connect() as conn:
+            conn.execute("UPDATE order_test_orders SET state = ?, final_status = ?, updated_at = ? "
+                         "WHERE norenordno = ?", (state, final_status, utc_now_iso(), norenordno))
+
+    def unresolved_test_orders(self) -> list[dict]:
+        """Test orders not yet confirmed cancelled, rejected or filled."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM order_test_orders WHERE state = 'open' ORDER BY placed_at").fetchall()
+        return [dict(r) for r in rows]
 
     # ----------------------------------------------------------------- settings
     def get_setting(self, key: str, default: Any = None) -> Any:

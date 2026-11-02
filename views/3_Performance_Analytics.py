@@ -15,8 +15,8 @@ from src.ui import components as C  # noqa: E402
 from src.ui import nav  # noqa: E402
 from src.ui.data import runs_frame  # noqa: E402
 from src.ui.state import (  # noqa: E402
-    HTTP_RUN_TYPES, all_secrets, get_db, get_endpoints, get_selection, include_synthetic_toggle,
-    load_demo_data, set_selection,
+    HTTP_RUN_TYPES, all_secrets, current_identity, get_db, get_endpoints, get_selection,
+    include_synthetic_toggle, load_demo_data, set_selection,
 )
 from src.ui.theme import apply_theme  # noqa: E402
 
@@ -36,7 +36,7 @@ if not len(runs):
                   "Run a benchmark, or load synthetic demo data from the Overview page to explore. "
                   "If you have demo runs, turn on *Include synthetic demo data* in the sidebar.")
     e1, e2, _ = st.columns([1, 1, 3])
-    if e1.button("Load demo data", type="primary", icon=":material/science:"):
+    if current_identity().is_admin and e1.button("Load demo data", type="primary", icon=":material/science:"):
         load_demo_data()
         st.rerun()
     with e2:

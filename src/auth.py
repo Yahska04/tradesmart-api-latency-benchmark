@@ -18,6 +18,7 @@ from urllib.parse import unquote, urlencode, urlparse
 
 import httpx
 
+from src import outbound
 from src.redaction import redact_text
 
 if TYPE_CHECKING:
@@ -120,7 +121,7 @@ def generate_access_token(
     url = f"{settings.base_url.rstrip('/')}/GenAcsTok"
 
     own_client = client is None
-    http = client or httpx.Client(timeout=timeout)
+    http = client or httpx.Client(timeout=timeout, **outbound.httpx_transport_kwargs())
     try:
         logger.info("Requesting access token via GenAcsTok")
         response = http.post(url, content=body.encode("utf-8"), timeout=timeout)

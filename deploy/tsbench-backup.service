@@ -1,0 +1,21 @@
+[Unit]
+Description=TradeSmart Latency Benchmark database backup
+
+[Service]
+Type=oneshot
+User=tsbench
+Group=tsbench
+UMask=0027
+ExecStart=/bin/bash /opt/tsbench/app/deploy/backup.sh
+Nice=10
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# SQLite needs write access beside the database to read it in WAL mode.
+ReadWritePaths=/var/lib/tsbench /var/backups/tsbench
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true

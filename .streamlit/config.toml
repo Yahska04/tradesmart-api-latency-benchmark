@@ -29,5 +29,8 @@ borderColor = "#2C385A"
 headless = true
 address = "localhost"             # local only: never expose benchmark data on the network
 
+[client]
+toolbarMode = "minimal"
+
 [browser]
 gatherUsageStats = false

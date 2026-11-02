@@ -17,20 +17,24 @@ from src.ui.data import NEVER_PROMPT, SECRET_PLACEHOLDERS, discover_placeholders
 from src.ui.instrument_picker import INSTRUMENT_PLACEHOLDERS, instrument_fields  # noqa: E402
 from src.ui.runner import JOB_KEY, LAST_RUN_KEY, active_job, start_job  # noqa: E402
 from src.ui.state import (  # noqa: E402
-    active_access_token, all_secrets, get_db, get_endpoints, get_logger, get_settings,
-    set_selection, token_source,
+    active_access_token, all_secrets, current_identity, egress_status, get_db, get_endpoints, get_logger,
+    get_settings, set_selection, token_source,
 )
 from src.ui.theme import apply_theme  # noqa: E402
 
 apply_theme("Run a benchmark",
             subtitle="Sequential, rate-limited requests to read-only endpoints. Nothing else is sent.")
 
+from src import run_lock  # noqa: E402
 from src.safety import is_auto_benchmarkable  # noqa: E402
 
 settings = get_settings()
 db = get_db()
 endpoints = get_endpoints()
+identity = current_identity()
 C.live_warning_banner(settings.environment)
+if settings.is_server() and (egress_problem := egress_status().problem):
+    st.warning(egress_problem, icon=":material/public:")
 
 
 def _default(key: str, fallback):
@@ -123,14 +127,19 @@ if last:
 token = active_access_token()
 has_token = bool(token)
 if not has_token:
-    st.error(
-        "**No access token yet, so benchmarks can't start.** Get one in either of two ways:\n\n"
-        "1. Open **Settings → Get an access token**, sign in through TradeSmart OAuth, and paste "
-        "the redirect URL. The token stays in this browser session only.\n"
-        "2. Or add `TS_ACCESS_TOKEN=…` and `TS_CLIENT_ID=…` to the `.env` file in the project "
-        "folder, then restart the app.\n\nYou can still configure and preview a plan below.",
-        icon=":material/key_off:")
-    if st.button("Open Settings", icon=":material/settings:"):
+    if settings.is_server():
+        st.error("**No access token yet, so benchmarks can't start.** An admin can get one on **Settings → "
+                 "Get an access token**; it is then shared by all users. You can still configure and preview "
+                 "a plan below.", icon=":material/key_off:")
+    else:
+        st.error(
+            "**No access token yet, so benchmarks can't start.** Get one in either of two ways:\n\n"
+            "1. Open **Settings → Get an access token**, sign in through TradeSmart OAuth, and paste "
+            "the redirect URL. The token stays in this browser session only.\n"
+            "2. Or add `TS_ACCESS_TOKEN=…` and `TS_CLIENT_ID=…` to the `.env` file in the project "
+            "folder, then restart the app.\n\nYou can still configure and preview a plan below.",
+            icon=":material/key_off:")
+    if identity.is_admin and st.button("Open Settings", icon=":material/settings:"):
         nav.go_to(nav.PAGE_SETTINGS)
 else:
     st.caption(f":material/key: Access token loaded from {token_source()} · shown nowhere, "
@@ -238,7 +247,7 @@ config = BenchmarkConfig(
     max_duration_s=float(max_minutes) * 60 if max_minutes else None,
     safety_factor=float(safety_factor), stop_on_rate_limit=bool(stop_on_rl),
     max_consecutive_failures=int(max_fail), payload_context=context,
-    environment=settings.environment, notes=notes,
+    environment=settings.environment, notes=notes, started_by=identity.username,
 )
 problems = config.validate()
 plan = build_plan(config, endpoints)
@@ -306,7 +315,11 @@ confirm_live = True
 if settings.environment == "live":
     confirm_live = st.checkbox("I understand this sends real read-only requests to my live account.")
 
-can_start = has_token and not problems and bool(plan.per_endpoint) and confirm_live
+other_run = run_lock.current_run(run_lock.lock_path_for(db.path))
+if other_run:
+    st.warning(run_lock.describe(other_run), icon=":material/hourglass_top:")
+
+can_start = has_token and not problems and bool(plan.per_endpoint) and confirm_live and not other_run
 if st.button("Start benchmark", type="primary", icon=":material/play_arrow:", disabled=not can_start):
     from src.api_client import TradeSmartClient
 
@@ -331,5 +344,7 @@ if not can_start:
         reasons.append("fix the settings above")
     if not confirm_live:
         reasons.append("confirm the live-account notice")
+    if other_run:
+        reasons.append("wait for the other run to finish")
     if reasons:
         st.caption("To start: " + ", ".join(reasons) + ".")

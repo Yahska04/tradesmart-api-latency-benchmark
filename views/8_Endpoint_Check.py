@@ -51,9 +51,10 @@ token = active_access_token()
 if token:
     st.caption(f":material/key: Access token loaded from {token_source()} · never shown or stored.")
 else:
-    st.error("**No access token yet, so requests can't be sent.** Get one on **Settings → Get an "
-             "access token**, or add `TS_ACCESS_TOKEN` to `.env` and restart the app. You can still "
-             "pick an endpoint and preview its request below.", icon=":material/key_off:")
+    how = ("An admin can get one on **Settings → Get an access token**." if settings.is_server() else
+           "Get one on **Settings → Get an access token**, or add `TS_ACCESS_TOKEN` to `.env` and restart the app.")
+    st.error(f"**No access token yet, so requests can't be sent.** {how} You can still pick an endpoint and "
+             "preview its request below.", icon=":material/key_off:")
     nav.nav_link(nav.PAGE_SETTINGS, "Open Settings", ":material/settings:")
 
 checkable = sorted((ep for ep in endpoints if is_auto_benchmarkable(ep)), key=lambda e: (e.category, e.name))

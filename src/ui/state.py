@@ -6,6 +6,8 @@ from typing import Any
 
 import streamlit as st
 
+from src import access, outbound, token_store
+from src.access import Identity
 from src.settings import Settings, load_settings
 
 SYNTHETIC_TOGGLE_KEY = "include_synthetic"
@@ -15,7 +17,22 @@ HTTP_RUN_TYPES = ["http", "manual", "demo"]
 
 @st.cache_resource(show_spinner=False)
 def get_settings() -> Settings:
-    return load_settings()
+    settings = load_settings()
+    outbound.set_local_address(settings.outbound_bind_ip)
+    return settings
+
+
+def _request_headers() -> dict[str, str]:
+    """Headers of the current browser connection; empty when there are none (access then fails closed)."""
+    try:
+        return dict(st.context.headers.to_dict())
+    except Exception:
+        return {}
+
+
+def current_identity() -> Identity:
+    """Who is using this session. Worked out on every call and never cached across users."""
+    return access.resolve_identity(get_settings(), _request_headers())
 
 
 @st.cache_resource(show_spinner=False)
@@ -65,12 +82,10 @@ def ensure_script_master() -> bool:
     downloads after midnight IST or after a failure. Set ``TS_SCRIPT_MASTER_AUTOSTART=0`` to disable
     (manual refresh in Settings still works). Returns True when a refresh was started.
     """
-    import os
-
     from src import script_master
 
     script_master.set_storage_dir(get_settings().db_path.parent / "scriptmaster")
-    if os.environ.get("TS_SCRIPT_MASTER_AUTOSTART", "1").strip().lower() in {"0", "false", "no", "off"}:
+    if not get_settings().script_master_autostart:
         return False
     try:
         get_logger()
@@ -81,15 +96,28 @@ def ensure_script_master() -> bool:
         return False
 
 
+def _obtained_token() -> str:
+    """The token got through Settings: the shared file on a server, this browser session on a PC."""
+    settings = get_settings()
+    if not settings.is_server():
+        return st.session_state.get(TOKEN_SESSION_KEY) or ""
+    token = token_store.load_token(settings.token_file) if settings.token_file else ""
+    if token:
+        from src.redaction import register_secrets
+
+        register_secrets([token])
+    return token
+
+
 def active_access_token() -> str:
-    """Session token from the Settings-page OAuth helper wins; otherwise TS_ACCESS_TOKEN from env."""
-    token = st.session_state.get(TOKEN_SESSION_KEY) or ""
-    return token or get_settings().access_token or ""
+    """The token from the Settings-page OAuth helper wins; otherwise TS_ACCESS_TOKEN from env."""
+    return _obtained_token() or get_settings().access_token or ""
 
 
 def token_source() -> str | None:
-    if st.session_state.get(TOKEN_SESSION_KEY):
-        return "session (Settings page OAuth helper)"
+    if _obtained_token():
+        return "the shared token on this server" if get_settings().is_server() \
+            else "session (Settings page OAuth helper)"
     if get_settings().access_token:
         return "environment (.env TS_ACCESS_TOKEN)"
     return None
@@ -97,10 +125,37 @@ def token_source() -> str | None:
 
 def all_secrets() -> list[str]:
     secrets = list(get_settings().secret_values())
-    tok = st.session_state.get(TOKEN_SESSION_KEY)
+    tok = _obtained_token()
     if tok:
         secrets.append(tok)
     return secrets
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _egress_cached():  # -> src.network_guard.EgressCheck
+    from src import network_guard
+
+    return network_guard.check_egress(get_settings(), get_db())
+
+
+def egress_status():  # -> src.network_guard.EgressCheck
+    """Static-IP check for display, refreshed about every 5 minutes. Order batches do their own fresh check."""
+    return _egress_cached()
+
+
+def clear_egress_status() -> None:
+    _egress_cached.clear()
+
+
+def egress_label(check) -> tuple[str, str]:
+    """(status text, pill kind) for an ``EgressCheck``."""
+    if not check.expected:
+        return "NOT SET", "warning"
+    if check.matches:
+        return "MATCH", "success"
+    if not check.detected:
+        return "CAN'T DETECT", "warning"
+    return "MISMATCH", "failure"
 
 
 def _has_real_runs() -> bool:

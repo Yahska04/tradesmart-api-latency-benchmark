@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from src import outbound
 from src.redaction import redact_text
 
 if TYPE_CHECKING:
@@ -180,7 +181,9 @@ def connectivity_check(
         result["error"] = "base URL has no host"
         return result
     resolve = resolver or socket.getaddrinfo
-    connect = connector or socket.create_connection
+    bind = outbound.local_address()
+    connect = connector or (lambda addr, timeout: socket.create_connection(
+        addr, timeout, source_address=(bind, 0) if bind else None))
     if tls_wrapper is None:
 
         def tls_wrapper(sock: Any, server_hostname: str) -> Any:
@@ -255,7 +258,7 @@ class TradeSmartClient:
         if self._transport is not None:
             kwargs["transport"] = self._transport
         else:
-            kwargs["verify"] = _shared_ssl_context()
+            kwargs.update(outbound.httpx_transport_kwargs(_shared_ssl_context()))
         return httpx.Client(**kwargs)
 
     def _redact(self, text: str | None) -> str | None:

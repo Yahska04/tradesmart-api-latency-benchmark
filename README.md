@@ -1,6 +1,6 @@
 # TradeSmart API Latency Benchmark
 
-A locally hosted tool that measures **client-observed** response latency for TradeSmart API V2
+A self-hosted tool that runs on your own PC or a company server and measures **client-observed** response latency for TradeSmart API V2
 endpoints. It stores every request sample in SQLite and reports actual P50, P95 and P99 per endpoint.
 
 It is built for internal performance analysis and debugging. **Benchmarks and endpoint checks never place,
@@ -70,7 +70,7 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 # If activation is blocked:  Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements-dev.txt    # runtime + tests and dev tools (requirements.txt is runtime only)
 ```
 
 In VS Code, choose **Python: Select Interpreter** → `.venv`.
@@ -84,7 +84,8 @@ code .env
 
 Fill in `TS_APP_KEY`, `TS_SECRET_KEY`, `TS_CLIENT_ID` and `TS_REDIRECT_URL` from your TradeSmart API app.
 Either paste a current `TS_ACCESS_TOKEN` or generate one in the app (**Settings → OAuth helper**).
-Tokens generated in the app are kept in the browser session only. They are never written to disk.
+On your own PC, tokens generated in the app are kept in the browser session only. They are never written to disk.
+(On a server, an admin's token is saved in one owner-only file so all users can share it. See `docs/DEPLOYMENT.md`.)
 `.env` is git-ignored. Secrets are masked in the UI, logs and CSV exports.
 
 ### 4. Review the endpoint registry
@@ -185,13 +186,31 @@ Exports are whitelisted and redacted. They contain no tokens, account IDs or res
 
 ---
 
+## Deploying to a company server
+
+The steps above are for one person on their own PC (`TS_DEPLOYMENT=local`). To run the tool on a shared Linux
+server behind Nginx, with user logins, roles and a registered static IP, follow
+**[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. The kit is in `deploy/`.
+
+---
+
 ## Project layout
 
 ```text
 app.py                      Overview dashboard
-views/                      Pages: Check, Registry, Run, Analytics, Historical, Settings, Methodology, WebSocket
+views/                      Pages: Check, Registry, Run, Analytics, Historical, Settings, Methodology, WebSocket,
+                            Order latency test
                             (not named pages/ on purpose: navigation is defined explicitly in app.py)
+deploy/                     Server kit: install, update, backup, user management, systemd units, Nginx template
 src/settings.py             .env / environment settings (secrets masked)
+src/access.py               who the user is and what they may do (server mode)
+src/network_guard.py        static-IP check: detected outbound IP vs the configured IP
+src/outbound.py             optional source address for outgoing connections
+src/token_store.py          shared access token file (server mode)
+src/run_lock.py             server-wide lock: one benchmark or order batch at a time
+src/order_test.py           guarded live order-latency test
+src/recover_orders.py       command-line check that cancels test orders left open
+src/doctor.py               deployment self-check (python -m src.doctor)
 src/redaction.py            secret masking + logging filter
 src/endpoint_registry.py    endpoint definitions and payload templates
 src/safety.py               safety classes, guards, rate limiter, circuit breaker
@@ -207,6 +226,7 @@ src/script_master.py        instrument lists (script master): download, SQLite s
 src/ui/                     theme, components, state helpers
 config/endpoints.json       endpoint registry
 docs/ARCHITECTURE.md        module contract
+docs/DEPLOYMENT.md          server deployment and handover guide
 docs/ENDPOINT_CATALOG.md    endpoint catalog + documentation gaps
 tests/                      pytest suite
 scripts/convert_logos.py    converts official logo artwork into assets/
@@ -218,8 +238,16 @@ scripts/convert_logos.py    converts official logo artwork into assets/
 - Results vary with market session (IST 09:15–15:30), server load and time of day. Compare runs only under
   similar conditions. The app flags differences in configuration.
 - TradeSmart's static-IP requirement, if any applies to your account, is not bypassed. Run the tool from
-  the registered network.
+  the registered network. On a server, TradeSmart sees the server's public IP, except on the OAuth login page,
+  which opens in the user's browser and shows the user's device IP.
+- The static-IP check asks an IP-echo service what address the server's traffic comes from. If the network routes
+  that service and TradeSmart differently, the check can pass while TradeSmart sees another address.
+- On a server, all users share one TradeSmart account and one access token, and only one benchmark or order
+  batch runs at a time. The token lifetime isn't stated in the documentation we have, so an admin regenerates the
+  token when API calls report session errors.
 - WebSocket metrics are message-arrival intervals observed by the client. They are not
   exchange-to-client latency.
-- Order endpoints support documentation-only registration and manual result entry until a safe sandbox
-  is available.
+- There is no safe sandbox for orders. The Order latency test places real orders on the live account; other
+  order endpoints stay documentation-only.
+- The server kit in `deploy/` has not yet been run on a real Ubuntu server. See
+  [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), "Tested vs not tested".

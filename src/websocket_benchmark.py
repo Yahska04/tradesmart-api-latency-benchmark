@@ -166,10 +166,12 @@ class WSBenchmarkResult:
 def _default_connect(cfg: WSBenchmarkConfig) -> Callable[[str], Any]:
     import websockets
 
+    from src import outbound
+
     def factory(url: str) -> Any:
         # Application-level heartbeat {"t":"h"} is used instead of protocol pings.
         return websockets.connect(url, open_timeout=cfg.connect_timeout_s, ping_interval=None,
-                                  close_timeout=2, max_size=2**22)
+                                  close_timeout=2, max_size=2**22, **outbound.websocket_kwargs())
 
     return factory
 

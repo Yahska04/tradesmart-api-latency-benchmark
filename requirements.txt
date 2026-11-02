@@ -1,13 +1,12 @@
-# TradeSmart API Latency Benchmark - runtime + test dependencies
+# TradeSmart API Latency Benchmark - runtime dependencies only.
+# Test and tooling dependencies are in requirements-dev.txt.
+# After changing this file, regenerate requirements.lock (the server installs from the lock):
+#   uv pip compile requirements.txt --python-version 3.12 --python-platform linux --generate-hashes -o requirements.lock
 streamlit>=1.39,<2
 httpx>=0.27,<1
+certifi>=2024.2.2
 pandas>=2.2,<4
 numpy>=2.0,<3
 plotly>=5.24,<8
 python-dotenv>=1.0,<2
 websockets>=13,<18
-# testing
-pytest>=8.3,<10
-respx>=0.21,<1
-# one-off logo conversion (scripts/convert_logos.py)
-pymupdf>=1.24

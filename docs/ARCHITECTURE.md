@@ -486,3 +486,14 @@ def clear_demo_runs(db: Database) -> int
   and `sym` = `EXCH:TSYM`), `sidebar_status()`; Settings has a *Script master* tab.
 - 2026-10-22: order test raised to 100 orders/IST day; bursts of <= 8 (`MAX_BURST_SIZE`) with >= 1 s pause; `OrderRateGate` caps PlaceOrder+CancelOrder at 8 per rolling 1.25 s (`ORDER_RATE_WINDOW_S`, TradeSmart limit 10 OPS); one quote per burst; `stop_event` support; the page runs batches in a background thread with a Stop button.
 - 2026-10-26: order test = one input for the whole batch (<= 1000/IST day, `MAX_ORDERS_PER_DAY`). Each burst places up to 8 orders back to back, then cancels all of them (every accepted order is cancelled even if a cancel fails or the batch stops), confirms status, and waits `burst_pause_s` (1-60 s, default 3) from the burst's last order. Results are written per burst phase and always flushed in `finally`.
+- 2026-11-02: company-server deployment (`TS_DEPLOYMENT=server`; `local` behaviour is unchanged). Guide: `docs/DEPLOYMENT.md`.
+  - `src/access.py`: `resolve_identity(settings, headers) -> Identity`. Trusts `X-Remote-User` only when `X-Proxy-Secret` matches `TS_AUTH_PROXY_SECRET`; denies otherwise. Roles come from `TS_ADMIN_USERS` and `TS_ORDER_USERS`.
+  - `src/network_guard.py`: compares the IP detected through `TS_IP_CHECK_URL` with the configured static IP (Settings value `server_static_ip`, else `TS_STATIC_IP`). `order_guard()` fails closed for orders when `TS_ENFORCE_STATIC_IP` is on (the server default); read-only requests only warn.
+  - `src/outbound.py`: optional source address (`TS_OUTBOUND_BIND_IP`) for REST, WebSocket, script master, token exchange and IP-check traffic.
+  - `src/token_store.py`: one shared access token in a 0600 file (`TS_TOKEN_FILE`, default `.access_token` beside the DB). Never in the DB, logs or exports.
+  - `src/run_lock.py`: OS file lock `api_run.lock` beside the DB. One benchmark or order batch at a time, across processes; released automatically if the process dies.
+  - `src/recover_orders.py`: `python -m src.recover_orders` runs `reconcile_test_orders` from `ExecStartPre`. Only touches journalled orders or orders tagged `latency-test`. Exit 1 means attention is needed.
+  - `src/doctor.py`: `python -m src.doctor` prints PASS/WARN/FAIL lines. It sends no API requests or credentials. Exit 1 on any FAIL.
+  - `database`: new table `order_test_orders` (journal of placed test orders; `state` `open`/`closed`/`filled`), read through `unresolved_test_orders()`.
+  - `deploy/`: Ubuntu 24.04 kit: install, update, backup, user-management and healthcheck scripts, systemd units, Nginx template, env template. Not yet run on a real Ubuntu server.
+- Order test: a placement with no reply sets the `order_test_needs_check` setting, which blocks new batches until `reconcile_test_orders` has read the order book. `TS_SCRIPT_MASTER_AUTOSTART` is a normal setting (`.env` or environment).

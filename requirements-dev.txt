@@ -1,0 +1,7 @@
+# Runtime dependencies plus what tests and one-off tooling need. Not installed on servers.
+-r requirements.txt
+# testing
+pytest>=8.3,<10
+respx>=0.21,<1
+# one-off logo conversion (scripts/convert_logos.py)
+pymupdf>=1.24

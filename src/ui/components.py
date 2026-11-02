@@ -236,6 +236,8 @@ def run_meta_block(run: dict | None, request_count: int | None = None) -> None:
         ("Environment", (run.get("environment") or DASH).upper()),
         ("Host", run.get("base_host") or DASH),
     ]
+    if cfg.get("started_by"):
+        items.append(("Started by", cfg["started_by"]))
     config_bits = []
     for key, label in (("iterations", "iterations"), ("warmup", "warm-up"),
                        ("timeout_s", "timeout s"), ("delay_ms", "delay ms"),

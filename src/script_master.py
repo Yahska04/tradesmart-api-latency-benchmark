@@ -30,6 +30,7 @@ from typing import Any, Iterable, Sequence
 
 import httpx
 
+from src import outbound
 from src.redaction import LOGGER_NAME
 from src.settings import PROJECT_ROOT
 
@@ -396,6 +397,7 @@ def refresh(exchanges: Sequence[str] | None = None, *, force: bool = False,
     results: dict[str, dict[str, Any]] = {}
     own_client = client is None
     http = client or httpx.Client(follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_S,
+                                  **outbound.httpx_transport_kwargs(),
                                   headers={"User-Agent": "tsbench-script-master/1.0"})
     with _write_lock:
         _set_progress(running=True, current=None, done=0, total=len(wanted),

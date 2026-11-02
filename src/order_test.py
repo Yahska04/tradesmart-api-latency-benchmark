@@ -26,6 +26,7 @@ PlaceOrder and CancelOrder samples are saved as a normal measured run (``config.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import threading
@@ -39,6 +40,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import pandas as pd
 
+from src import run_lock
 from src.metrics import endpoint_metrics
 
 if TYPE_CHECKING:
@@ -65,8 +67,14 @@ MIN_BURST_PAUSE_S, DEFAULT_BURST_PAUSE_S, MAX_BURST_PAUSE_S = 1.0, 3.0, 60.0
 STATUS_POLLS = 3
 STATUS_POLL_INTERVAL_S = 0.5
 SAFE_FINAL_STATUSES = {"CANCELED", "CANCELLED", "REJECTED"}
+OPEN_ORDER_STATUSES = {"OPEN", "PENDING", "TRIGGER_PENDING"}
+TEST_ORDER_REMARK = "latency-test"  # tags every test order; recovery only ever cancels orders with this tag
+SHUTDOWN_WAIT_S = 25.0
+# Set when a placement got no reply: an order may exist that the journal can't list (it has no number yet).
+NEEDS_CHECK_SETTING = "order_test_needs_check"
 IST = timezone(timedelta(hours=5, minutes=30))
 REQUIRED_ENDPOINTS = ("GetQuotes", "PlaceOrder", "CancelOrder", "SingleOrdHist")
+RECOVERY_ENDPOINTS = ("OrderBook", "CancelOrder", "SingleOrdHist")
 
 
 class OrderTestError(RuntimeError):
@@ -165,7 +173,7 @@ def build_order_payload(client_id: str, spec: OrderSpec, price: Decimal) -> dict
         "uid": client_id, "actid": client_id, "exch": spec.exch,
         "tsym": quote(unquote(spec.tsym.strip()), safe="-_."),
         "qty": str(ORDER_QTY), "prc": str(price), "dscqty": "0", "prd": spec.product,
-        "trantype": "B", "prctyp": "LMT", "ret": "DAY", "ordersource": "API", "remarks": "latency-test",
+        "trantype": "B", "prctyp": "LMT", "ret": "DAY", "ordersource": "API", "remarks": TEST_ORDER_REMARK,
     }
 
 
@@ -226,6 +234,7 @@ class OrderAttempt:
     norenordno: str | None = None
     cancel: "RequestResult | None" = None
     final_status: str | None = None
+    filled: bool = False
     alert: str | None = None
 
 
@@ -235,6 +244,7 @@ class OrderTestOutcome:
     attempts: list[OrderAttempt] = field(default_factory=list)
     stop_reason: str | None = None
     stopped_by_user: bool = False
+    started_by: str = "local"
 
     @property
     def alerts(self) -> list[str]:
@@ -267,11 +277,56 @@ def _order_status(body: bytes | None) -> tuple[str | None, bool]:
     return (str(first.get("status") or "").upper() or None), filled
 
 
+_active_batches: list[tuple[threading.Event, threading.Thread]] = []
+
+
+@atexit.register
+def _stop_batches_on_shutdown() -> None:
+    """On service stop: place no more orders and give the running burst time to cancel what it placed."""
+    for stop, _ in list(_active_batches):
+        stop.set()
+    deadline = time.monotonic() + SHUTDOWN_WAIT_S
+    for _, thread in list(_active_batches):
+        if thread is not threading.current_thread():
+            thread.join(max(0.0, deadline - time.monotonic()))
+
+
 def run_order_test(
     db: "Database",
     endpoints: dict[str, "Endpoint"],
     client: "TradeSmartClient",
     *,
+    started_by: str = "local",
+    ip_guard: Callable[[], str | None] | None = None,
+    stop_event: threading.Event | None = None,
+    **kwargs: Any,
+) -> OrderTestOutcome:
+    """Run one guarded order batch: server-wide lock + static-IP guard around :func:`_run_order_batch`.
+
+    ``ip_guard`` returns why orders must be refused, or None. :class:`OrderTestError` means nothing was sent.
+    """
+    stop_event = stop_event or threading.Event()
+    try:
+        with run_lock.exclusive_run(run_lock.lock_path_for(db.path), owner=started_by, kind="order test"):
+            reason = ip_guard() if ip_guard else None
+            if reason:
+                raise OrderTestError(reason)
+            entry = (stop_event, threading.current_thread())
+            _active_batches.append(entry)
+            try:
+                return _run_order_batch(db, endpoints, client, started_by=started_by, stop_event=stop_event, **kwargs)
+            finally:
+                _active_batches.remove(entry)
+    except run_lock.RunBusyError as exc:
+        raise OrderTestError(str(exc)) from exc
+
+
+def _run_order_batch(
+    db: "Database",
+    endpoints: dict[str, "Endpoint"],
+    client: "TradeSmartClient",
+    *,
+    started_by: str,
     client_id: str,
     spec: OrderSpec,
     count: int,
@@ -316,6 +371,12 @@ def run_order_test(
         problems.append(f"delay between bursts must be between {MIN_BURST_PAUSE_S:g} and {MAX_BURST_PAUSE_S:g} s")
     if confirmation.strip() != confirmation_phrase(count):
         problems.append(f'type "{confirmation_phrase(count)}" exactly to confirm')
+    unresolved = db.unresolved_test_orders()
+    if unresolved:
+        problems.append(f"{len(unresolved)} test order(s) from an earlier batch are not confirmed closed; "
+                        "run the open-order check first")
+    if db.get_setting(NEEDS_CHECK_SETTING):
+        problems.append("an earlier order got no reply and may exist; run the open-order check first")
     if problems:
         raise OrderTestError("; ".join(problems))
 
@@ -327,15 +388,16 @@ def run_order_test(
               "connection_mode": client.connection_mode, "order": "grouped", "concurrency": 1,
               "environment": environment, "source": "order_test", "exch": spec.exch, "product": spec.product,
               "offset_pct": float(spec.offset_pct), "burst_size": burst_size, "burst_pause_s": burst_pause_s,
-              "max_order_ops_per_second": gate.max_per_second}
+              "max_order_ops_per_second": gate.max_per_second, "started_by": started_by}
     db.create_run(run_id=run_id, run_type="http", environment=environment,
                   base_host=urlparse(base_url).hostname or "", connection_mode=client.connection_mode,
                   config=config, planned_requests=2 * count,
                   notes=f"LIVE ORDER TEST: {count} x BUY {ORDER_QTY} {spec.exch}:{spec.tsym} LIMIT, "
                         f"bursts of {burst_size} every {burst_pause_s:g}s, auto-cancelled")
-    outcome = OrderTestOutcome(run_id=run_id)
+    outcome = OrderTestOutcome(run_id=run_id, started_by=started_by)
     stored: list = []
     unsaved: list = []   # results sent but not yet written; always flushed (see finally)
+    journaled: set[str] = set()   # order numbers already in the recovery journal
     status = "completed"
 
     def flush() -> None:
@@ -348,13 +410,22 @@ def run_order_test(
 
     def notify(attempt: OrderAttempt) -> None:
         if on_attempt:
-            on_attempt(attempt)
+            try:
+                on_attempt(attempt)
+            except Exception:  # a display problem must never stop live orders from being cancelled
+                logger.exception("Order test %s: progress callback failed", run_id)
+
+    def journal(attempts: list[OrderAttempt]) -> None:
+        db.record_test_orders([{"norenordno": a.norenordno, "run_id": run_id, "exch": spec.exch, "tsym": spec.tsym,
+                                "started_by": started_by} for a in attempts])
+        journaled.update(a.norenordno for a in attempts)
 
     def check_status(attempt: OrderAttempt) -> bool:
         """One SingleOrdHist read; True when the order is confirmed closed (or found filled)."""
         h = client.timed_post(ep_hist, {"uid": client_id, "norenordno": attempt.norenordno},
                               run_id=run_id, seq=attempt.seq, is_warmup=True)
         attempt.final_status, filled = _order_status(client.last_response_body if h.success else None)
+        attempt.filled = attempt.filled or filled
         if filled:
             attempt.alert = (f"Order {attempt.norenordno} was FILLED (status {attempt.final_status}). You now "
                              f"hold {ORDER_QTY} share of {spec.tsym}. Review it in TradeSmart.")
@@ -422,17 +493,25 @@ def run_order_test(
                     why = attempt.place.error_message or attempt.place.outcome
                     if attempt.place.outcome in ("timeout", "connect_error", "other_error"):
                         attempt.alert = (f"Order {seq}: no reply from TradeSmart ({why}). The order MAY have been "
-                                         "placed — check your order book in TradeSmart and cancel it if present.")
+                                         "placed. Run the open-order check, and confirm in your TradeSmart order book.")
+                        db.set_setting(NEEDS_CHECK_SETTING, True)
                     else:
                         attempt.alert = f"Order {seq} was not accepted: {why}"
                     break  # stop placing; the accepted orders of this burst are still cancelled below
             next_burst_at = clock() + burst_pause_s
-            # Persist the burst's placements right away (the daily cap counts stored attempts). Written after
-            # the placement loop, not between orders, so a database lock can't stretch the burst.
-            flush()
+            # Persist the burst's placements right away (the daily cap counts stored attempts), and journal the
+            # accepted orders so a crash from here on can be recovered. Written after the placement loop, not
+            # between orders, so a database lock can't stretch the burst.
+            accepted = [a for a in burst if a.norenordno]
+            save_problem = None
+            try:
+                flush()
+                journal(accepted)
+            except Exception as exc:  # the orders are live, so cancel them anyway; recovery can find them by tag
+                logger.exception("Order test %s: couldn't save the burst", run_id)
+                save_problem = f"Couldn't save this burst to the database ({exc}). Batch stopped after cancelling it."
 
             # 3. cancel EVERY accepted order of the burst, even if one cancel fails
-            accepted = [a for a in burst if a.norenordno]
             for attempt in accepted:
                 gate.acquire()
                 attempt.cancel = client.timed_post(ep_cancel, {"uid": client_id, "norenordno": attempt.norenordno},
@@ -450,11 +529,17 @@ def run_order_test(
             pending = [a for a in accepted if not check_status(a)]
             settle_pending(pending)
             for attempt in accepted:
+                state = ("filled" if attempt.filled else
+                         "closed" if attempt.final_status in SAFE_FINAL_STATUSES else "open")
+                db.update_test_order(attempt.norenordno, state, attempt.final_status)
                 notify(attempt)
 
             problem = next((a for a in burst if a.alert), None)
             if problem is not None:
                 outcome.stop_reason = problem.alert
+                break
+            if save_problem:
+                outcome.stop_reason = save_problem
                 break
         if stop_requested() and outcome.stop_reason is None and seq < count:
             outcome.stopped_by_user = True
@@ -464,7 +549,13 @@ def run_order_test(
         outcome.stop_reason = f"Order test stopped unexpectedly: {exc}. Check your order book in TradeSmart."
         logger.exception("Order test %s failed", run_id)
     finally:
-        flush()
+        try:  # a failure inside a burst can skip the journal step; record_test_orders keeps existing states
+            journal([a for a in outcome.attempts if a.norenordno and a.norenordno not in journaled])
+            flush()
+        except Exception as exc:
+            status = "failed"
+            outcome.stop_reason = outcome.stop_reason or f"Couldn't save the results to the database: {exc}"
+            logger.exception("Order test %s: couldn't save the results", run_id)
         if stored:
             df = pd.DataFrame([r.to_row() for r in stored])
             db.save_endpoint_metrics(run_id, endpoint_metrics(df))
@@ -473,3 +564,101 @@ def run_order_test(
         db.finish_run(run_id, status, outcome.stop_reason)
         logger.info("Order test %s: %d order attempt(s), status %s", run_id, len(outcome.attempts), status)
     return outcome
+
+
+# ----------------------------------------------------------------------------------------- recovery
+@dataclass
+class ReconcileReport:
+    """Result of :func:`reconcile_test_orders`. Each list holds order numbers."""
+
+    checked: int = 0
+    closed: list[str] = field(default_factory=list)
+    cancelled: list[str] = field(default_factory=list)
+    filled: list[str] = field(default_factory=list)
+    still_open: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+    @property
+    def needs_attention(self) -> bool:
+        return bool(self.filled or self.still_open or self.errors)
+
+
+def reconcile_test_orders(
+    db: "Database",
+    endpoints: dict[str, "Endpoint"],
+    client: "TradeSmartClient",
+    *,
+    client_id: str,
+    started_by: str = "recovery",
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+) -> ReconcileReport:
+    """Find test orders left open (e.g. by a crash mid-burst) and cancel them.
+
+    Looks at the local journal plus today's order book, but only ever touches orders from the journal or tagged
+    ``TEST_ORDER_REMARK``, so real orders are never cancelled. An order whose status can't be read is not cancelled
+    and stays unresolved. Raises :class:`OrderTestError` when another run holds the lock.
+    """
+    missing_eps = [e for e in RECOVERY_ENDPOINTS if e not in endpoints]
+    if missing_eps:
+        raise OrderTestError(f"endpoint registry is missing: {', '.join(missing_eps)}")
+    report = ReconcileReport()
+    run_id = "recovery"
+    gate = OrderRateGate(MAX_ORDER_OPS_PER_SECOND, clock=clock, sleep=sleep)
+
+    def status_of(number: str) -> tuple[str | None, bool]:
+        h = client.timed_post(endpoints["SingleOrdHist"], {"uid": client_id, "norenordno": number},
+                              run_id=run_id, seq=0, is_warmup=True)
+        return _order_status(client.last_response_body if h.success else None)
+
+    try:
+        with run_lock.exclusive_run(run_lock.lock_path_for(db.path), owner=started_by, kind="open-order check"):
+            targets = {row["norenordno"] for row in db.unresolved_test_orders()}
+
+            book = client.timed_post(endpoints["OrderBook"], {"uid": client_id, "actid": client_id},
+                                     run_id=run_id, seq=0, is_warmup=True)
+            rows = _json(client.last_response_body) if book.success else None  # "no data" counts as success
+            if not book.success:
+                report.errors.append(f"Couldn't read the order book: {book.error_message or book.outcome}")
+            for row in rows if isinstance(rows, list) else []:
+                if (isinstance(row, dict) and row.get("norenordno") and row.get("remarks") == TEST_ORDER_REMARK
+                        and str(row.get("status", "")).upper() in OPEN_ORDER_STATUSES):
+                    number = str(row["norenordno"])
+                    if number not in targets:
+                        db.record_test_orders([{"norenordno": number, "run_id": run_id, "exch": row.get("exch"),
+                                                "tsym": row.get("tsym"), "started_by": started_by}])
+                        targets.add(number)
+
+            if book.success:  # the order book was read, so a no-reply order would now be in targets
+                db.set_setting(NEEDS_CHECK_SETTING, False)
+
+            for number in sorted(targets):
+                report.checked += 1
+                final, filled = status_of(number)
+                cancel = None
+                if not filled and final is not None and final not in SAFE_FINAL_STATUSES:
+                    gate.acquire()
+                    cancel = client.timed_post(endpoints["CancelOrder"], {"uid": client_id, "norenordno": number},
+                                               run_id=run_id, seq=0, is_warmup=False)
+                    for _ in range(STATUS_POLLS):
+                        sleep(STATUS_POLL_INTERVAL_S)
+                        final, filled = status_of(number)
+                        if filled or final in SAFE_FINAL_STATUSES:
+                            break
+                if filled:
+                    db.update_test_order(number, "filled", final)
+                    report.filled.append(number)
+                elif final in SAFE_FINAL_STATUSES:
+                    db.update_test_order(number, "closed", final)
+                    (report.cancelled if cancel is not None and cancel.success else report.closed).append(number)
+                else:
+                    db.update_test_order(number, "open", final)
+                    report.still_open.append(number)
+                    if cancel is not None and not cancel.success:
+                        report.errors.append(f"Cancel failed for {number}: {cancel.error_message or cancel.outcome}")
+    except run_lock.RunBusyError as exc:
+        raise OrderTestError(str(exc)) from exc
+    logger.info("Open-order check by %s: checked %d, cancelled %d, filled %d, still open %d, errors %d",
+                started_by, report.checked, len(report.cancelled), len(report.filled), len(report.still_open),
+                len(report.errors))
+    return report

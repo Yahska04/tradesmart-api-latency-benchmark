@@ -17,6 +17,7 @@ LAST_RUN_KEY = "bench_last_run"
 def start_job(session_state: Any, *, db: Any, endpoints: list, config: Any,
               client_factory: Callable[[Any], Any], base_url: str, logger: Any = None) -> dict:
     from src.benchmark_engine import BenchmarkRunner
+    from src.run_lock import RunBusyError
 
     stop_event = threading.Event()
     state: dict[str, Any] = {
@@ -47,6 +48,8 @@ def start_job(session_state: Any, *, db: Any, endpoints: list, config: Any,
             runner = BenchmarkRunner(db, endpoints, client_factory, base_url=base_url, logger=logger)
             state["run_id"] = runner.run(config, progress_cb=progress_cb, stop_event=stop_event)
             state["message"] = "Stopped by you." if stop_event.is_set() else "Finished."
+        except RunBusyError as exc:
+            state["error"] = str(exc)
         except Exception as exc:  # never surface secrets: message only, redacted
             try:
                 from src.redaction import redact_text

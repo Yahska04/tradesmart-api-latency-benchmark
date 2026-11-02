@@ -1,0 +1,40 @@
+[Unit]
+Description=TradeSmart API Latency Benchmark (Streamlit)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=tsbench
+Group=tsbench
+WorkingDirectory=/opt/tsbench/app
+EnvironmentFile=/etc/tsbench/tsbench.env
+Environment=HOME=/var/lib/tsbench
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+# Cancels test orders left open by a crash or power cut. The leading "-" means a failure
+# (for example, TradeSmart unreachable) does not block startup; the app shows open orders too.
+ExecStartPre=-/opt/tsbench/venv/bin/python -m src.recover_orders
+ExecStart=/opt/tsbench/venv/bin/python -m streamlit run app.py --server.address 127.0.0.1 --server.port 8501 --server.headless true --server.fileWatcherType none --browser.gatherUsageStats false
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+TimeoutStopSec=60
+KillSignal=SIGTERM
+
+# Hardening, compatible with Python and SQLite.
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tsbench /var/log/tsbench
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

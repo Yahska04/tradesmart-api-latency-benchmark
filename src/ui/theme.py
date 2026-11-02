@@ -169,11 +169,28 @@ section[data-testid="stSidebar"] [data-testid="stCaptionContainer"] {{ color: #B
 """
 
 
+def _enforce_access() -> None:
+    """Stop the page for anyone not let in by the login proxy; name the signed-in user on a server."""
+    from src.ui.state import current_identity, get_settings
+
+    identity = current_identity()
+    if not identity.authenticated:
+        st.error(f"**Access denied.** {identity.denied_reason} Ask the system team for help.",
+                 icon=":material/lock:")
+        st.stop()
+    if get_settings().is_server():
+        roles = [text for allowed, text in ((identity.is_admin, "admin"),
+                                            (identity.can_place_orders, "can place orders")) if allowed]
+        st.sidebar.caption(f":material/person: Signed in as **{identity.username}**"
+                           + (f" · {', '.join(roles)}" if roles else ""))
+
+
 def apply_theme(page_title: str, icon: str | Path | None = None, *, subtitle: str | None = None,
                 show_title: bool = True) -> None:
-    """Configure the page (wide layout + favicon), inject brand CSS and place the sidebar logo.
+    """Configure the page (wide layout + favicon), inject brand CSS, place the sidebar logo, check access.
 
-    Call this first on every page. ``subtitle`` renders a short lead line under the H1.
+    Call this first on every page: it stops the page for a user who isn't allowed in. ``subtitle`` renders
+    a short lead line under the H1.
     """
     page_icon = str(icon) if icon else (str(FAVICON) if FAVICON.exists() else None)
     try:
@@ -185,6 +202,7 @@ def apply_theme(page_title: str, icon: str | Path | None = None, *, subtitle: st
     if LOGO_WHITE.exists():
         st.logo(str(LOGO_WHITE), size="large",
                 icon_image=str(MONOGRAM) if MONOGRAM.exists() else None)
+    _enforce_access()
     if show_title:
         st.title(page_title)
         if subtitle:

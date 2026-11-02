@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import pandas as pd
 
-from src import safety
+from src import run_lock, safety
 from src.api_client import CONNECTION_MODES, RequestResult, TradeSmartClient, utc_now_iso
 from src.database import new_run_id
 from src.endpoint_registry import Endpoint, missing_placeholders, render_payload
@@ -76,6 +76,7 @@ class BenchmarkConfig:
     payload_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     environment: str = "live"
     notes: str = ""
+    started_by: str = "local"
     # Additions: separate opt-ins for state-changing endpoints (never effective when environment == "live").
     state_changing_test_mode: bool = False
     user_confirmed: bool = False
@@ -292,10 +293,26 @@ class BenchmarkRunner:
         progress_cb: Callable[[Progress], None] | None = None,
         stop_event: threading.Event | None = None,
     ) -> str:
-        """Run the benchmark and return its run id. Raises ``ValueError`` only for an invalid config."""
+        """Run the benchmark and return its run id.
+
+        Raises ``ValueError`` for an invalid config and :class:`run_lock.RunBusyError` when another run holds
+        the server-wide lock (nothing is sent in either case).
+        """
         problems = config.validate()
         if problems:
             raise ValueError("invalid benchmark config: " + "; ".join(problems))
+        db_path = getattr(self.db, "path", None)
+        if db_path is None:  # test doubles without a database file
+            return self._run(config, progress_cb, stop_event)
+        with run_lock.exclusive_run(run_lock.lock_path_for(db_path), owner=config.started_by, kind="benchmark"):
+            return self._run(config, progress_cb, stop_event)
+
+    def _run(
+        self,
+        config: BenchmarkConfig,
+        progress_cb: Callable[[Progress], None] | None,
+        stop_event: threading.Event | None,
+    ) -> str:
         stop_event = stop_event or threading.Event()
         plan = build_plan(config, self.endpoints)
         by_id = {ep.id: ep for ep in self.endpoints}

@@ -16,30 +16,49 @@ import streamlit as st  # noqa: E402
 from src.ui import components as C  # noqa: E402
 from src.ui import nav  # noqa: E402
 from src.ui.state import (  # noqa: E402
-    active_access_token, all_secrets, endpoints_by_id, get_db, get_logger, get_settings, set_selection,
+    active_access_token, all_secrets, clear_egress_status, current_identity, egress_label, egress_status,
+    endpoints_by_id, get_db, get_logger, get_settings, set_selection,
 )
 from src.ui.theme import apply_theme  # noqa: E402
 
 apply_theme("Order latency test",
             subtitle="Time PlaceOrder and CancelOrder on your live account, inside tight guardrails.")
 
+identity = current_identity()
+if not identity.can_place_orders:
+    st.warning("Order tests are limited to the people on the admin's order access list. Ask an admin if you "
+               "need access.", icon=":material/lock:")
+    st.stop()
+
+from src import network_guard, run_lock  # noqa: E402
 from src.order_test import (  # noqa: E402
+    NEEDS_CHECK_SETTING,
     ALLOWED_EXCHANGES, ALLOWED_PRODUCTS, DEFAULT_OFFSET_PCT, IST, MAX_OFFSET_PCT, MAX_ORDER_VALUE_INR,
     MAX_ORDERS_PER_DAY, MIN_OFFSET_PCT, ORDER_QTY, REQUIRED_ENDPOINTS, OrderSpec, OrderTestError,
     DEFAULT_BURST_SIZE, MAX_BURST_SIZE, MAX_ORDER_OPS_PER_SECOND, MIN_BURST_PAUSE_S, ORDER_TEST_SERIES,
     DEFAULT_BURST_PAUSE_S, MAX_BURST_PAUSE_S, ORDER_RATE_WINDOW_S,
-    confirmation_phrase, orders_placed_today, parse_quote, run_order_test, safe_limit_price,
+    confirmation_phrase, orders_placed_today, parse_quote, reconcile_test_orders, run_order_test,
+    safe_limit_price,
 )
+from src.redaction import redact_text  # noqa: E402
 
-PREVIEW_KEY, RESULT_KEY = "order_test_preview", "order_test_result"
-JOB_KEY, ERROR_KEY = "order_test_job", "order_test_error"
+PREVIEW_KEY, RECONCILE_KEY = "order_test_preview", "order_test_reconcile"
 
+
+@st.cache_resource(show_spinner=False)
+def _job_store() -> dict:
+    """The one running batch and the last result, shared by every user of this server process."""
+    return {"job": None, "last": None, "lock": threading.Lock()}
+
+
+store = _job_store()
 settings = get_settings()
 db = get_db()
 eps = endpoints_by_id()
 
 st.error(
-    "**This page places REAL orders on your TradeSmart account.** Each order is a BUY LIMIT for "
+    f"**This page places REAL orders on {'the shared' if settings.is_server() else 'your'} TradeSmart account.** "
+    f"Each order is a BUY LIMIT for "
     f"{ORDER_QTY} share, priced well below the market and cancelled within about 1–2 seconds. A fill is very unlikely, "
     "but not impossible in a sharp fall. Use it only if you accept that.", icon=":material/warning:")
 
@@ -73,13 +92,16 @@ if not token:
     problems_global.append("add an access token (Settings → Get an access token)")
 if not settings.client_id:
     problems_global.append("set TS_CLIENT_ID in .env")
+job = store["job"]
 
 used = orders_placed_today(db)
 remaining = max(0, MAX_ORDERS_PER_DAY - used)
 now_ist = datetime.now(timezone.utc).astimezone(IST)
 market_open = now_ist.weekday() < 5 and dtime(9, 15) <= now_ist.time() <= dtime(15, 30)
 
-c1, c2, c3 = st.columns(3)
+check = egress_status()
+ip_block = check.order_block_reason
+c1, c2, c3, c4 = st.columns(4)
 with c1:
     C.metric_card("Orders left today", f"{remaining} / {MAX_ORDERS_PER_DAY}", sub=f"{used} used (IST day)",
                   tone="failure" if remaining == 0 else "accent")
@@ -89,12 +111,90 @@ with c2:
 with c3:
     C.metric_card("Environment", settings.environment.upper(), sub="Real account" if settings.is_live() else
                   "Non-live environment", tone="failure" if settings.is_live() else "neutral")
+with c4:
+    ip_label, ip_kind = egress_label(check)
+    C.metric_card("Outbound IP", check.detected or "Unknown",
+                  sub=f"{ip_label} · static IP {check.expected or 'not set'}",
+                  tone={"success": "success", "failure": "failure"}.get(ip_kind, "failure" if ip_block else "neutral"))
+if ip_block:
+    st.error(f"Orders are blocked. {ip_block}", icon=":material/public_off:")
+    b1, b2, _ = st.columns([1, 1, 3])
+    with b1:
+        nav.nav_link(nav.PAGE_SETTINGS, "Open Settings", ":material/settings:")
+    if b2.button("Check the IP again", icon=":material/refresh:"):
+        clear_egress_status()
+        st.rerun()
+elif check.problem and settings.is_server():
+    st.warning(check.problem, icon=":material/public:")
 if not market_open:
     st.warning("The market is closed. TradeSmart will probably reject orders now — a rejection still gives a "
                "latency sample, but not of the normal in-market path.", icon=":material/schedule:")
 if problems_global:
     st.error("Before you can test: " + "; ".join(problems_global) + ".", icon=":material/key_off:")
     nav.nav_link(nav.PAGE_SETTINGS, "Open Settings", ":material/settings:")
+
+other_run = None if job else run_lock.current_run(run_lock.lock_path_for(db.path))
+if other_run:
+    st.warning(run_lock.describe(other_run), icon=":material/hourglass_top:")
+
+# ============================================================================ open test orders
+# A running batch's own orders are open by design, so they only count once nothing is running.
+unresolved = [] if job or other_run else db.unresolved_test_orders()
+needs_check = not job and not other_run and bool(db.get_setting(NEEDS_CHECK_SETTING))
+if needs_check:
+    st.error("**An earlier order got no reply from TradeSmart, so it may exist.** New batches stay blocked until "
+             "you press **Check for open test orders** below. Also confirm in your TradeSmart order book.",
+             icon=":material/report:")
+if unresolved:
+    st.error(f"**{len(unresolved)} test order{'s are' if len(unresolved) != 1 else ' is'} not confirmed closed.** "
+             "New batches stay blocked until they are checked. Press **Check for open test orders** below.",
+             icon=":material/report:")
+
+
+def _show_reconcile(report) -> None:
+    st.markdown(f"Checked {report.checked} · cancelled {len(report.cancelled)} · already closed "
+                f"{len(report.closed)} · filled {len(report.filled)} · still open {len(report.still_open)} · "
+                f"errors {len(report.errors)}")
+    if report.filled:
+        st.error(f"Filled, so you now hold these shares: {', '.join(report.filled)}. Review them in TradeSmart.",
+                 icon=":material/report:")
+    if report.still_open:
+        st.error(f"Still open: {', '.join(report.still_open)}. Cancel them in TradeSmart, then check again.",
+                 icon=":material/report:")
+    for problem in report.errors:
+        st.error(problem, icon=":material/error:")
+    if not report.needs_attention:
+        st.success("No test orders are left open.", icon=":material/check_circle:")
+
+
+with st.expander("Open test orders", expanded=bool(unresolved or needs_check), icon=":material/search_check:"):
+    st.caption("Finds test orders left open, for example after a crash, and cancels them. It only ever touches "
+               "this app's own tagged test orders, never your other orders.")
+    no_order_book = "OrderBook" not in eps
+    if no_order_book:
+        st.caption("The endpoint registry is missing OrderBook. Restore config/endpoints.json to use this.")
+    if st.button("Check for open test orders", icon=":material/search_check:",
+                 disabled=bool(problems_global or job or other_run or no_order_book),
+                 help="Reads the order book and order status, and cancels this app's own open test orders."):
+        from src.api_client import TradeSmartClient
+
+        get_logger()
+        try:
+            with st.spinner("Checking…"), TradeSmartClient(settings.base_url, access_token=token, timeout_s=10.0,
+                                                           secrets=all_secrets()) as client:
+                st.session_state[RECONCILE_KEY] = reconcile_test_orders(
+                    db, eps, client, client_id=settings.client_id, started_by=identity.username)
+        except OrderTestError as exc:
+            st.session_state[RECONCILE_KEY] = str(exc)
+        except Exception as exc:
+            st.session_state[RECONCILE_KEY] = redact_text(
+                f"The check stopped unexpectedly: {exc}. Check your order book in TradeSmart.", all_secrets())
+        st.rerun()
+    reconcile = st.session_state.get(RECONCILE_KEY)
+    if isinstance(reconcile, str):
+        st.error(reconcile, icon=":material/error:")
+    elif reconcile is not None:
+        _show_reconcile(reconcile)
 
 # ============================================================================ 1 · instrument
 st.subheader("1 · Choose the instrument")
@@ -197,38 +297,30 @@ def _attempt_rows(attempts) -> pd.DataFrame:
     } for a in attempts])
 
 
-def _worker(job: dict, client_kwargs: dict, run_kwargs: dict) -> None:
-    """Background thread: runs the batch. Touches only the plain ``job`` dict, never Streamlit APIs."""
+def _worker(store: dict, job: dict, db, eps: dict, client_kwargs: dict, run_kwargs: dict) -> None:
+    """Background thread: runs the batch. Touches only plain dicts, never Streamlit APIs."""
     from src.api_client import TradeSmartClient
 
+    outcome, error = None, None
     try:
         with TradeSmartClient(**client_kwargs) as client:
-            job["outcome"] = run_order_test(db, eps, client, stop_event=job["stop"],
-                                            on_attempt=lambda a: job["attempts"].__setitem__(a.seq, a),
-                                            **run_kwargs)
+            outcome = run_order_test(db, eps, client, stop_event=job["stop"],
+                                     on_attempt=lambda a: job["attempts"].__setitem__(a.seq, a), **run_kwargs)
     except OrderTestError as exc:
-        job["error"] = f"Nothing was sent: {exc}"
+        error = f"Nothing was sent: {exc}"
     except Exception as exc:  # pragma: no cover - defensive
-        job["error"] = f"The order test stopped unexpectedly: {exc}. Check your order book in TradeSmart."
+        error = redact_text(f"The order test stopped unexpectedly: {exc}. Check your order book in TradeSmart.",
+                            client_kwargs["secrets"])
     finally:
-        job["done"] = True
-
-
-job = st.session_state.get(JOB_KEY)
+        with store["lock"]:
+            store["last"] = {"outcome": outcome, "error": error, "started_by": job["started_by"]}
+            store["job"] = None
 
 
 @st.fragment(run_every=1.0)
 def _progress_panel() -> None:
-    job = st.session_state.get(JOB_KEY)
+    job = store["job"]
     if not job:
-        return
-    if job.get("done"):
-        st.session_state.pop(JOB_KEY, None)
-        if job.get("error"):
-            st.session_state[ERROR_KEY] = job["error"]
-        if job.get("outcome") is not None:
-            st.session_state[RESULT_KEY] = job["outcome"]
-        st.session_state["order_batches"] = st.session_state.get("order_batches", 0) + 1
         st.rerun(scope="app")
     attempts = [job["attempts"][k] for k in sorted(job["attempts"])]
     placed = len(attempts)
@@ -248,8 +340,8 @@ def _progress_panel() -> None:
 
 st.subheader("2 · Place and cancel")
 if job:
-    st.info("An order batch is running. Keep this tab open — you can stop it between orders.",
-            icon=":material/sync:")
+    st.info(f"An order batch started by {job['started_by']} is running. It carries on if you close this tab. "
+            "Anyone with order access can stop it.", icon=":material/sync:")
     _progress_panel()
 elif remaining == 0:
     st.info(f"You've used all {MAX_ORDERS_PER_DAY} test orders for today. The limit resets at midnight IST.",
@@ -276,33 +368,42 @@ else:
                f"confirm → wait. Placements + cancellations stay at or under {MAX_ORDER_OPS_PER_SECOND} per "
                f"{ORDER_RATE_WINDOW_S:g} s. Orders stay open for roughly 1–2 s before they are cancelled.")
     phrase = confirmation_phrase(count)
-    # A fresh key per batch: the confirmation never carries over to the next batch.
     typed = st.text_input(f'Type **{phrase}** to confirm', autocomplete="off",
                           key=f"order_confirm_{st.session_state.get('order_batches', 0)}")
-    ready = bool(preview) and not problems_global and typed.strip() == phrase
+    ready = (bool(preview) and not problems_global and typed.strip() == phrase and not ip_block and not other_run
+             and not unresolved and not needs_check)
     if st.button(f"Place and cancel {count} order{'s' if count != 1 else ''}", type="primary",
                  icon=":material/bolt:", disabled=not ready):
         from src.database import new_run_id
 
         get_logger()
-        for key in (RESULT_KEY, ERROR_KEY):
-            st.session_state.pop(key, None)
         new_job = {"stop": threading.Event(), "attempts": {}, "count": count, "burst": burst, "bursts": bursts,
-                   "done": False,
-                   "outcome": None, "error": None}
+                   "started_by": identity.username}
         client_kwargs = dict(base_url=settings.base_url, access_token=token, timeout_s=10.0,
                              connection_mode="warm" if reuse else "cold", secrets=all_secrets())
         run_kwargs = dict(client_id=settings.client_id, spec=spec, count=count, confirmation=typed,
                           run_id=new_run_id("order"), environment=settings.environment,
-                          base_url=settings.base_url, timeout_s=10.0, burst_size=burst, burst_pause_s=pause)
-        threading.Thread(target=_worker, args=(new_job, client_kwargs, run_kwargs), daemon=True,
-                         name="order-latency-test").start()
-        st.session_state[JOB_KEY] = new_job
+                          base_url=settings.base_url, timeout_s=10.0, burst_size=burst, burst_pause_s=pause,
+                          started_by=identity.username, ip_guard=network_guard.order_guard(settings, db))
+        with store["lock"]:
+            if store["job"] is None:  # another user may have started a batch since this page was drawn
+                thread = threading.Thread(target=_worker, args=(store, new_job, db, eps, client_kwargs, run_kwargs),
+                                          daemon=True, name="order-latency-test")
+                thread.start()
+                store["job"], store["last"] = new_job, None
+        # A fresh key: the confirmation never carries over to the next batch.
+        st.session_state["order_batches"] = st.session_state.get("order_batches", 0) + 1
         st.rerun()
     elif not ready:
         reasons = []
         if problems_global:
             reasons.append("fix the items above")
+        if ip_block:
+            reasons.append("fix the server IP problem above")
+        if other_run:
+            reasons.append("wait for the other run to finish")
+        if unresolved or needs_check:
+            reasons.append("check the open test orders above")
         if not preview:
             reasons.append("get a quote and preview")
         if typed.strip() != phrase:
@@ -310,13 +411,17 @@ else:
         st.caption("To place: " + ", ".join(reasons) + ".")
 
 # ============================================================================ results
-if st.session_state.get(ERROR_KEY):
-    st.error(st.session_state[ERROR_KEY], icon=":material/block:")
-outcome = st.session_state.get(RESULT_KEY)
-if not outcome or job:
+last = store["last"]
+if job or not last:
+    st.stop()
+if last["error"]:
+    st.error(f"Batch started by {last['started_by']}. {last['error']}", icon=":material/block:")
+outcome = last["outcome"]
+if not outcome:
     st.stop()
 
 st.subheader("Results")
+st.caption(f"Last batch, started by {outcome.started_by}.")
 for alert in outcome.alerts:
     st.error(alert, icon=":material/report:")
 if outcome.stop_reason and not outcome.alerts:

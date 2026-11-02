@@ -16,8 +16,10 @@ from src.redaction import mask_secret
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 APP_VERSION = "1.0.0"
 
-SECRET_FIELDS: frozenset[str] = frozenset({"app_key", "secret_key", "client_id", "access_token"})
+SECRET_FIELDS: frozenset[str] = frozenset(
+    {"app_key", "secret_key", "client_id", "access_token", "auth_proxy_secret"})
 ENVIRONMENTS: tuple[str, ...] = ("live", "uat", "mock")
+DEPLOYMENTS: tuple[str, ...] = ("local", "server")
 
 DEFAULTS: dict[str, str] = {
     "TS_BASE_URL": "https://v2api.tradesmartonline.in/NorenWClientAPIv2",
@@ -32,12 +34,21 @@ DEFAULTS: dict[str, str] = {
     "TS_STATIC_IP": "",
     "TS_DB_PATH": "data/benchmark.db",
     "TS_LOG_PATH": "data/logs/app.log",
+    "TS_DEPLOYMENT": "local",
+    "TS_AUTH_PROXY_SECRET": "",
+    "TS_ADMIN_USERS": "",
+    "TS_ORDER_USERS": "",
+    "TS_ENFORCE_STATIC_IP": "",
+    "TS_OUTBOUND_BIND_IP": "",
+    "TS_IP_CHECK_URL": "https://api.ipify.org",
+    "TS_TOKEN_FILE": "",
+    "TS_SCRIPT_MASTER_AUTOSTART": "1",
 }
 
 
 @dataclass
 class Settings:
-    """Resolved runtime settings. Secret fields: app_key, secret_key, client_id, access_token."""
+    """Resolved runtime settings. Secret fields are listed in :data:`SECRET_FIELDS`."""
 
     base_url: str
     ws_url: str
@@ -51,6 +62,19 @@ class Settings:
     static_ip: str
     db_path: Path
     log_path: Path
+    deployment: str = "local"
+    auth_proxy_secret: str = ""
+    admin_users: tuple[str, ...] = ()
+    order_users: tuple[str, ...] = ()
+    enforce_static_ip: bool = False
+    outbound_bind_ip: str = ""
+    ip_check_url: str = DEFAULTS["TS_IP_CHECK_URL"]
+    token_file: Path | None = None
+    script_master_autostart: bool = True
+
+    def is_server(self) -> bool:
+        """True on a shared server: login required, roles enforced, one shared access token."""
+        return self.deployment == "server"
 
     def is_live(self) -> bool:
         """True when the configured environment is the live (production) account."""
@@ -77,6 +101,10 @@ class Settings:
         return f"Settings({inner})"
 
 
+def _user_list(value: str) -> tuple[str, ...]:
+    return tuple(u.strip() for u in value.split(",") if u.strip())
+
+
 def _resolve_path(value: str) -> Path:
     path = Path(value).expanduser()
     return path if path.is_absolute() else (PROJECT_ROOT / path)
@@ -101,6 +129,14 @@ def load_settings(env_file: Path | None = None) -> Settings:
     environment = get("TS_ENVIRONMENT").lower() or "live"
     if environment not in ENVIRONMENTS:
         environment = "live"
+    # A mistyped deployment must not silently turn login off, so anything unknown means "server".
+    deployment = get("TS_DEPLOYMENT").lower() or "local"
+    if deployment not in DEPLOYMENTS:
+        deployment = "server"
+    enforce_raw = get("TS_ENFORCE_STATIC_IP").lower()
+    enforce = enforce_raw not in {"0", "false", "no", "off"} if enforce_raw else deployment == "server"
+    db_path = _resolve_path(get("TS_DB_PATH") or DEFAULTS["TS_DB_PATH"])
+    token_raw = get("TS_TOKEN_FILE")
 
     return Settings(
         base_url=get("TS_BASE_URL").rstrip("/") or DEFAULTS["TS_BASE_URL"],
@@ -113,6 +149,15 @@ def load_settings(env_file: Path | None = None) -> Settings:
         access_token=get("TS_ACCESS_TOKEN"),
         environment=environment,
         static_ip=get("TS_STATIC_IP"),
-        db_path=_resolve_path(get("TS_DB_PATH") or DEFAULTS["TS_DB_PATH"]),
+        db_path=db_path,
         log_path=_resolve_path(get("TS_LOG_PATH") or DEFAULTS["TS_LOG_PATH"]),
+        deployment=deployment,
+        auth_proxy_secret=get("TS_AUTH_PROXY_SECRET"),
+        admin_users=_user_list(get("TS_ADMIN_USERS")),
+        order_users=_user_list(get("TS_ORDER_USERS")),
+        enforce_static_ip=enforce,
+        outbound_bind_ip=get("TS_OUTBOUND_BIND_IP"),
+        ip_check_url=get("TS_IP_CHECK_URL") or DEFAULTS["TS_IP_CHECK_URL"],
+        token_file=_resolve_path(token_raw) if token_raw else db_path.parent / ".access_token",
+        script_master_autostart=get("TS_SCRIPT_MASTER_AUTOSTART").lower() not in {"0", "false", "no", "off"},
     )

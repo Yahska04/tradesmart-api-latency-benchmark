@@ -14,7 +14,7 @@ import streamlit as st  # noqa: E402
 from src.ui import components as C  # noqa: E402
 from src.ui import nav  # noqa: E402
 from src.ui.state import (  # noqa: E402
-    clear_endpoint_cache, get_db, get_endpoints, get_selection, get_settings, set_selection,
+    clear_endpoint_cache, current_identity, get_db, get_endpoints, get_selection, get_settings, set_selection,
 )
 from src.ui.theme import apply_theme  # noqa: E402
 
@@ -26,6 +26,8 @@ from src.safety import classify, is_auto_benchmarkable  # noqa: E402
 SAFETY_LABELS = {"read_only": "Read-only", "state_changing": "State-changing",
                  "special_setup": "Special setup"}
 WORK_KEY = "registry_working"
+ADMIN_NOTE = "Only admins can change the registry."
+can_edit = current_identity().is_admin
 
 # ----------------------------------------------------------------------------- load
 try:
@@ -122,8 +124,8 @@ with tab_list:
                     icon=":material/filter_alt_off:")
         else:
             st.data_editor(
-                view, key=editor_key, hide_index=True, on_change=_apply_edits,
-                disabled=[c for c in view.columns if c != "Benchmark"],
+                view, key=editor_key, hide_index=True, on_change=_apply_edits if can_edit else None,
+                disabled=[c for c in view.columns if c != "Benchmark"] if can_edit else True,
                 column_config={
                     "Benchmark": st.column_config.CheckboxColumn(
                         help="Include in automated benchmarks by default. Only read-only endpoints "
@@ -140,23 +142,26 @@ with tab_list:
         st.caption(f"{len(view_eps)} of {len(working)} endpoints shown · "
                    f"{sum(1 for ep in working if ep.benchmark_enabled and is_auto_benchmarkable(ep))}"
                    " enabled for benchmark" + (" · **unsaved changes**" if dirty else ""))
-        b1, b2, _ = st.columns([1, 1, 4])
-        if b1.button("Save registry", type="primary", disabled=not dirty, icon=":material/save:"):
-            try:
-                from src.endpoint_registry import save_endpoints
+        if not can_edit:
+            st.caption(ADMIN_NOTE)
+        else:
+            b1, b2, _ = st.columns([1, 1, 4])
+            if b1.button("Save registry", type="primary", disabled=not dirty, icon=":material/save:"):
+                try:
+                    from src.endpoint_registry import save_endpoints
 
-                save_endpoints(working)
-                get_db().upsert_endpoints(working)
-                clear_endpoint_cache()
+                    save_endpoints(working)
+                    get_db().upsert_endpoints(working)
+                    clear_endpoint_cache()
+                    st.session_state.pop(WORK_KEY, None)
+                    st.toast("Registry saved to config/endpoints.json", icon=":material/check:")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Couldn't save the registry: {exc}. Check the file isn't open in another "
+                             "program, then try again.", icon=":material/error:")
+            if b2.button("Discard changes", disabled=not dirty):
                 st.session_state.pop(WORK_KEY, None)
-                st.toast("Registry saved to config/endpoints.json", icon=":material/check:")
                 st.rerun()
-            except Exception as exc:
-                st.error(f"Couldn't save the registry: {exc}. Check the file isn't open in another "
-                         "program, then try again.", icon=":material/error:")
-        if b2.button("Discard changes", disabled=not dirty):
-            st.session_state.pop(WORK_KEY, None)
-            st.rerun()
 
 # ----------------------------------------------------------------------------- details
 with tab_detail:
@@ -225,63 +230,66 @@ with tab_detail:
 
 # ----------------------------------------------------------------------------- import
 with tab_import:
-    st.markdown("Import a full registry (`{\"endpoints\": [...]}`) or a bare list of endpoint "
-                "objects. Use the official TradeSmart documentation as the source of truth.")
-    upload = st.file_uploader("Registry JSON file", type=["json"])
-    pasted = st.text_area("…or paste JSON", height=160, placeholder='{"endpoints": [ … ]}')
-    if st.button("Validate import", icon=":material/fact_check:"):
-        text = upload.getvalue().decode("utf-8") if upload else pasted
-        if not text.strip():
-            st.warning("Choose a file or paste JSON first.", icon=":material/upload_file:")
-        else:
-            try:
-                from src.endpoint_registry import import_endpoints_json, validate_endpoint
+    if not can_edit:
+        st.info(ADMIN_NOTE, icon=":material/lock:")
+    else:
+        st.markdown("Import a full registry (`{\"endpoints\": [...]}`) or a bare list of endpoint "
+                    "objects. Use the official TradeSmart documentation as the source of truth.")
+        upload = st.file_uploader("Registry JSON file", type=["json"])
+        pasted = st.text_area("…or paste JSON", height=160, placeholder='{"endpoints": [ … ]}')
+        if st.button("Validate import", icon=":material/fact_check:"):
+            text = upload.getvalue().decode("utf-8") if upload else pasted
+            if not text.strip():
+                st.warning("Choose a file or paste JSON first.", icon=":material/upload_file:")
+            else:
+                try:
+                    from src.endpoint_registry import import_endpoints_json, validate_endpoint
 
-                imported = import_endpoints_json(text)
-                for ep in imported:   # safety: never enable state-changing endpoints on import
-                    if not is_auto_benchmarkable(ep):
-                        ep.benchmark_enabled = False
-                st.session_state["import_preview"] = imported
-                st.session_state["import_problems"] = {
-                    ep.id: validate_endpoint(ep) for ep in imported if validate_endpoint(ep)}
-            except Exception as exc:
-                st.session_state.pop("import_preview", None)
-                st.error(f"That JSON couldn't be imported: {exc}. Fix the highlighted part and "
-                         "validate again.", icon=":material/error:")
-    preview = st.session_state.get("import_preview")
-    if preview:
-        problems = st.session_state.get("import_problems") or {}
-        existing = {ep.id for ep in working}
-        new_ids = [ep.id for ep in preview if ep.id not in existing]
-        st.success(f"{len(preview)} endpoints parsed · {len(new_ids)} new · "
-                   f"{len(preview) - len(new_ids)} update existing IDs.", icon=":material/check:")
-        if problems:
-            st.warning("Validation problems:\n\n" + "\n".join(
-                f"- **{k}**: {'; '.join(v)}" for k, v in problems.items()), icon=":material/rule:")
-        st.dataframe(pd.DataFrame([{"ID": ep.id, "Name": ep.name, "Category": ep.category,
-                                    "Safety class": SAFETY_LABELS.get(classify(ep), classify(ep))}
-                                   for ep in preview]), hide_index=True)
+                    imported = import_endpoints_json(text)
+                    for ep in imported:   # safety: never enable state-changing endpoints on import
+                        if not is_auto_benchmarkable(ep):
+                            ep.benchmark_enabled = False
+                    st.session_state["import_preview"] = imported
+                    st.session_state["import_problems"] = {
+                        ep.id: validate_endpoint(ep) for ep in imported if validate_endpoint(ep)}
+                except Exception as exc:
+                    st.session_state.pop("import_preview", None)
+                    st.error(f"That JSON couldn't be imported: {exc}. Fix the highlighted part and "
+                             "validate again.", icon=":material/error:")
+        preview = st.session_state.get("import_preview")
+        if preview:
+            problems = st.session_state.get("import_problems") or {}
+            existing = {ep.id for ep in working}
+            new_ids = [ep.id for ep in preview if ep.id not in existing]
+            st.success(f"{len(preview)} endpoints parsed · {len(new_ids)} new · "
+                       f"{len(preview) - len(new_ids)} update existing IDs.", icon=":material/check:")
+            if problems:
+                st.warning("Validation problems:\n\n" + "\n".join(
+                    f"- **{k}**: {'; '.join(v)}" for k, v in problems.items()), icon=":material/rule:")
+            st.dataframe(pd.DataFrame([{"ID": ep.id, "Name": ep.name, "Category": ep.category,
+                                        "Safety class": SAFETY_LABELS.get(classify(ep), classify(ep))}
+                                       for ep in preview]), hide_index=True)
 
-        def _commit(merged: list) -> None:
-            from src.endpoint_registry import save_endpoints
+            def _commit(merged: list) -> None:
+                from src.endpoint_registry import save_endpoints
 
-            save_endpoints(merged)
-            get_db().upsert_endpoints(merged)
-            clear_endpoint_cache()
-            for k in (WORK_KEY, "import_preview", "import_problems"):
-                st.session_state.pop(k, None)
+                save_endpoints(merged)
+                get_db().upsert_endpoints(merged)
+                clear_endpoint_cache()
+                for k in (WORK_KEY, "import_preview", "import_problems"):
+                    st.session_state.pop(k, None)
 
-        i1, i2, _ = st.columns([1.2, 1.2, 3])
-        if i1.button("Merge into registry", type="primary", disabled=bool(problems)):
-            by_id = {ep.id: ep for ep in working}
-            by_id.update({ep.id: ep for ep in preview})
-            _commit(list(by_id.values()))
-            st.rerun()
-        if i2.button("Replace registry", disabled=bool(problems)):
-            _commit(list(preview))
-            st.rerun()
-        if problems:
-            st.caption("Fix the validation problems before saving.")
+            i1, i2, _ = st.columns([1.2, 1.2, 3])
+            if i1.button("Merge into registry", type="primary", disabled=bool(problems)):
+                by_id = {ep.id: ep for ep in working}
+                by_id.update({ep.id: ep for ep in preview})
+                _commit(list(by_id.values()))
+                st.rerun()
+            if i2.button("Replace registry", disabled=bool(problems)):
+                _commit(list(preview))
+                st.rerun()
+            if problems:
+                st.caption("Fix the validation problems before saving.")
 
 # ----------------------------------------------------------------------------- manual entry
 with tab_manual:
@@ -291,42 +299,45 @@ with tab_manual:
         "one yourself — in a safe sandbox or from your own order logs — record it here. Manual "
         "entries are stored as separate *manual* runs and never mixed into automated metrics.")
     manual_eps = [ep for ep in working if not is_auto_benchmarkable(ep) or ep.requires_fixture]
+    if not can_edit:
+        st.info("Only admins can enter manual results.", icon=":material/lock:")
     if not manual_eps:
         st.info("No state-changing or special-setup endpoints are registered.",
                 icon=":material/info:")
     else:
         settings = get_settings()
-        with st.form("manual_entry", clear_on_submit=True):
-            m_ep = st.selectbox("Endpoint", [ep.id for ep in manual_eps],
-                                format_func=lambda i: f"{next(e.name for e in manual_eps if e.id == i)} ({i})")
-            c1, c2, c3 = st.columns(3)
-            m_lat = c1.number_input("Observed latency (ms)", min_value=0.0, value=None,
-                                    step=1.0, format="%.1f", placeholder="e.g. 182.4")
-            m_status = c2.number_input("HTTP status", min_value=100, max_value=599, value=200,
-                                       step=1)
-            m_ok = c3.radio("Result", ["Success", "Failure"], horizontal=True)
-            m_notes = st.text_area("How was this measured?",
-                                   placeholder="Sandbox order at 10:42 IST, timed with …")
-            submitted = st.form_submit_button("Save manual result", type="primary",
-                                              icon=":material/save:")
-        if submitted:
-            if m_lat is None:
-                st.error("Enter the observed latency in milliseconds, then save again.",
-                         icon=":material/error:")
-            else:
-                try:
-                    from src.benchmark_engine import record_manual_result
-
-                    ep = next(e for e in manual_eps if e.id == m_ep)
-                    rid = record_manual_result(get_db(), ep, float(m_lat), int(m_status),
-                                               m_ok == "Success", settings.environment,
-                                               notes=m_notes)
-                    st.success(f"Saved manual result for {ep.name} (run `{rid}`).",
-                               icon=":material/check_circle:")
-                except Exception as exc:
-                    st.error(f"Couldn't save the manual result: {exc}. Try again; if it keeps "
-                             "failing, check the database path on the Settings page.",
+        if can_edit:
+            with st.form("manual_entry", clear_on_submit=True):
+                m_ep = st.selectbox("Endpoint", [ep.id for ep in manual_eps],
+                                    format_func=lambda i: f"{next(e.name for e in manual_eps if e.id == i)} ({i})")
+                c1, c2, c3 = st.columns(3)
+                m_lat = c1.number_input("Observed latency (ms)", min_value=0.0, value=None,
+                                        step=1.0, format="%.1f", placeholder="e.g. 182.4")
+                m_status = c2.number_input("HTTP status", min_value=100, max_value=599, value=200,
+                                           step=1)
+                m_ok = c3.radio("Result", ["Success", "Failure"], horizontal=True)
+                m_notes = st.text_area("How was this measured?",
+                                       placeholder="Sandbox order at 10:42 IST, timed with …")
+                submitted = st.form_submit_button("Save manual result", type="primary",
+                                                  icon=":material/save:")
+            if submitted:
+                if m_lat is None:
+                    st.error("Enter the observed latency in milliseconds, then save again.",
                              icon=":material/error:")
+                else:
+                    try:
+                        from src.benchmark_engine import record_manual_result
+
+                        ep = next(e for e in manual_eps if e.id == m_ep)
+                        rid = record_manual_result(get_db(), ep, float(m_lat), int(m_status),
+                                                   m_ok == "Success", settings.environment,
+                                                   notes=m_notes)
+                        st.success(f"Saved manual result for {ep.name} (run `{rid}`).",
+                                   icon=":material/check_circle:")
+                    except Exception as exc:
+                        st.error(f"Couldn't save the manual result: {exc}. Try again; if it keeps "
+                                 "failing, check the database path on the Settings page.",
+                                 icon=":material/error:")
         try:
             manual_runs = get_db().list_runs(include_synthetic=False, run_types=["manual"])
         except Exception:

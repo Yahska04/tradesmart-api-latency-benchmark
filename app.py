@@ -27,8 +27,8 @@ from src.ui import components as C  # noqa: E402
 from src.ui import nav  # noqa: E402
 from src.ui.instrument_picker import sidebar_status  # noqa: E402
 from src.ui.state import (  # noqa: E402
-    HTTP_RUN_TYPES, ensure_script_master, get_db, get_endpoints, get_selection, include_synthetic_toggle,
-    load_demo_data, set_selection,
+    HTTP_RUN_TYPES, current_identity, ensure_script_master, get_db, get_endpoints, get_selection,
+    include_synthetic_toggle, load_demo_data, set_selection,
 )
 from src.ui.theme import apply_theme  # noqa: E402
 
@@ -45,6 +45,7 @@ def _load_demo() -> None:
 
 
 def _empty_overview(has_hidden_demo: bool) -> None:
+    is_admin = current_identity().is_admin
     if has_hidden_demo:
         C.empty_state(
             "Only demo data so far",
@@ -56,13 +57,14 @@ def _empty_overview(has_hidden_demo: bool) -> None:
         C.empty_state(
             "No benchmark runs yet",
             "Start with demo data to explore the dashboard, or add your TradeSmart credentials "
-            "and run a small benchmark against read-only endpoints.",
+            "and run a small benchmark against read-only endpoints." if is_admin else
+            "Run a small benchmark against read-only endpoints to see results here.",
         )
     c1, c2, c3, _ = st.columns([1, 1, 1, 2])
-    if not has_hidden_demo:
+    if is_admin and not has_hidden_demo:
         c1.button("Load demo data", type="primary", icon=":material/science:", on_click=_load_demo,
                   width="stretch")
-    if c2.button("Configure credentials", icon=":material/key:", width="stretch"):
+    if is_admin and c2.button("Configure credentials", icon=":material/key:", width="stretch"):
         nav.go_to(nav.PAGE_SETTINGS)
     if c3.button("Run a benchmark", icon=":material/play_arrow:", width="stretch"):
         nav.go_to(nav.PAGE_RUN)
@@ -187,6 +189,10 @@ def overview() -> None:
 
 
 def main() -> None:
+    if not current_identity().authenticated:
+        # Nothing runs for a denied request: no navigation, status lines or downloads.
+        apply_theme("Access denied", show_title=False)
+        return
     pages = {
         "Dashboards": [
             st.Page(overview, title="Overview", icon=":material/dashboard:", default=True),

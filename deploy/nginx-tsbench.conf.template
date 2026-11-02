@@ -1,0 +1,90 @@
+# TradeSmart Latency Benchmark: Nginx site. Rendered by deploy/install.sh into
+# /etc/nginx/sites-available/tsbench. Edit the template, not the rendered file.
+#
+# Placeholders: __SERVER_NAME__ and __ALLOW_RULES__ (one "allow" per CIDR, then "deny all").
+# Written for Nginx 1.24 (Ubuntu 24.04): HTTP/2 stays off so no version-specific syntax is needed.
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+# Per client IP. Slows password guessing, while the burst absorbs the many static files of one Streamlit page.
+limit_req_zone $binary_remote_addr zone=tsbench_req:10m rate=10r/s;
+
+server {
+    listen 80;
+    server_name __SERVER_NAME__;
+    server_tokens off;
+
+    # OAuth return from TradeSmart. $args keeps the query string exactly as sent, so ab%2Bc stays encoded.
+    location = /callback {
+        return 302 https://$http_host/Settings$is_args$args;
+    }
+
+    # This server only redirects and proxies nothing, so the allow-list and login live on port 443.
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name __SERVER_NAME__;
+    server_tokens off;
+
+    ssl_certificate     /etc/nginx/ssl/tsbench.crt;
+    ssl_certificate_key /etc/nginx/ssl/tsbench.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:tsbench_tls:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # No HSTS: the default certificate may be self-signed.
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header Referrer-Policy "no-referrer" always;
+
+    # Who may connect at all.
+    __ALLOW_RULES__
+
+    client_max_body_size 5m;
+
+    # OAuth return when the redirect URL registered with TradeSmart is https. Only redirects, like port 80.
+    location = /callback {
+        return 302 https://$http_host/Settings$is_args$args;
+    }
+
+    location / {
+        limit_req zone=tsbench_req burst=200 nodelay;
+        limit_req_status 429;
+
+        auth_basic "TradeSmart Latency Benchmark";
+        auth_basic_user_file /etc/nginx/tsbench.htpasswd;
+
+        proxy_pass http://127.0.0.1:8501;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        # Streamlit's WebSocket same-origin check compares the Origin host with Host, so Host must be
+        # exactly what the browser sent, including any port.
+        proxy_set_header Host $http_host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Identity. proxy_set_header replaces anything the client sent under these names; underscore
+        # variants such as X_Remote_User are dropped by Nginx (underscores_in_headers is off by default).
+        proxy_set_header X-Remote-User $remote_user;
+        include /etc/nginx/tsbench-proxy-secret.conf;
+        # The app has no use for the password, so it never receives it.
+        proxy_set_header Authorization "";
+
+        proxy_read_timeout 86400;
+        proxy_send_timeout 86400;
+        proxy_buffering off;
+    }
+}

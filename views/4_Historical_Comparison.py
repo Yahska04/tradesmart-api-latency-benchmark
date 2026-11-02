@@ -17,7 +17,9 @@ from src.ui import components as C  # noqa: E402
 from src.ui import nav  # noqa: E402
 from src.ui import theme as T  # noqa: E402
 from src.ui.data import run_endpoint_metrics, runs_frame  # noqa: E402
-from src.ui.state import get_db, get_selection, include_synthetic_toggle, load_demo_data  # noqa: E402
+from src.ui.state import (  # noqa: E402
+    current_identity, get_db, get_selection, include_synthetic_toggle, load_demo_data,
+)
 from src.ui.theme import apply_theme  # noqa: E402
 
 apply_theme("Historical comparison",
@@ -33,7 +35,7 @@ if len(runs) < 2:
         "the same settings), or load synthetic demo data to try this page.",
         icon=":material/history:")
     e1, e2, _ = st.columns([1, 1, 3])
-    if e1.button("Load demo data", type="primary", icon=":material/science:"):
+    if current_identity().is_admin and e1.button("Load demo data", type="primary", icon=":material/science:"):
         load_demo_data()
         st.rerun()
     with e2:

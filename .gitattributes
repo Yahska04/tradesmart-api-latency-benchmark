@@ -1,0 +1,18 @@
+# Normalise text files to LF in the repository.
+* text=auto
+
+# Files executed or parsed on Linux must keep LF, even in a Windows checkout.
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.template text eol=lf
+deploy/*.example text eol=lf
+
+# Windows batch files need CRLF.
+*.bat text eol=crlf
+
+# Binary artwork.
+*.png binary
+*.ai binary
+*.eps binary
+*.cdr binary
