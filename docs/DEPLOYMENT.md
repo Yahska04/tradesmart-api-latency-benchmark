@@ -734,7 +734,7 @@ wrong, the app denies access.
 
 **Identity headers.** Nginx overwrites `X-Remote-User` and `X-Proxy-Secret` on every request, so a value sent by the browser
 is discarded. `healthcheck.sh` tests this. Nginx also strips the password (`Authorization`) before passing requests to the app. If you
-change the Nginx template, keep this behaviour.
+change the Nginx site file, keep this behaviour.
 
 **Network exposure.** Streamlit binds to 127.0.0.1:8501. Don't change that or open the port.
 
