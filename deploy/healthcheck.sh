@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check a running install: sudo bash /opt/tsbench/app/deploy/healthcheck.sh
+# Check a running install: sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh
 # Exit code 0 when every check passes, 1 otherwise. Prints no secrets and sends no credentials to TradeSmart.
 set -uo pipefail
 
@@ -24,8 +24,10 @@ equals() {
     [[ "$1" == "$2" ]]
 }
 
+# Ask for this site by name on this machine, so no other site on the server answers instead.
 status_of() {
-    curl -ks -o /dev/null --max-time 10 -w '%{http_code}' "$@"
+    curl -ks -o /dev/null --max-time 10 -w '%{http_code}' \
+        --resolve "$SERVER_NAME:443:127.0.0.1" "$@"
 }
 
 systemctl is-active --quiet tsbench.service
@@ -38,11 +40,19 @@ health="$(curl -fsS --max-time 5 "$HEALTH_URL" 2>/dev/null)"
 equals "$health" ok
 report $? "Streamlit health endpoint answers ok"
 
-code="$(status_of https://127.0.0.1/)"
+if [[ -e "$NGINX_SITE_LINK" ]]; then report 0 "Nginx site is enabled"; else report 1 "Nginx site is enabled"; fi
+
+if grep -q CHANGE_ME "$NGINX_SITE" 2>/dev/null; then
+    report 1 "Nginx site has no CHANGE_ME values left"
+else
+    report 0 "Nginx site has no CHANGE_ME values left"
+fi
+
+code="$(status_of "https://$SERVER_NAME/")"
 equals "$code" 401
 report $? "Nginx asks for a login (got $code, expected 401)"
 
-code="$(status_of -H 'X-Remote-User: healthcheck' -H 'X-Proxy-Secret: healthcheck' https://127.0.0.1/)"
+code="$(status_of -H 'X-Remote-User: healthcheck' -H 'X-Proxy-Secret: healthcheck' "https://$SERVER_NAME/")"
 equals "$code" 401
 report $? "Nginx ignores forged identity headers (got $code, expected 401)"
 

@@ -145,7 +145,11 @@ with tab_ip:
             st.rerun()
 
     st.markdown("#### Redirect URL to register with TradeSmart")
-    if configured:
+    if settings.redirect_url:
+        st.code(settings.redirect_url, language="text")
+        st.caption("After login, TradeSmart sends the code to this address and you land back on this page. "
+                   "Set by `TS_REDIRECT_URL`.")
+    elif configured:
         host = f"[{configured}]" if ":" in configured else configured
         st.code(f"http://{host}/callback", language="text")
         st.caption("After login, TradeSmart sends the code to this address and you land back on this page.")

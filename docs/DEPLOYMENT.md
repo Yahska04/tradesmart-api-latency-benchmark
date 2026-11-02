@@ -29,7 +29,7 @@ Replace everything in `<angle brackets>` with your own value. Never put real cre
 
 ## 1. What this is
 
-A Streamlit web app for internal use. It measures how long TradeSmart API V2 requests take as seen from the server,
+A Python (Streamlit) web app for internal use, served at `https://tsolc.tradesmartonline.in`. It measures how long TradeSmart API V2 requests take as seen from the server,
 stores every sample in SQLite, and reports P50, P95 and P99 per endpoint.
 
 Automated benchmarks and endpoint checks only send read-only requests. One opt-in page, **Order latency test**,
@@ -43,9 +43,9 @@ All users share one TradeSmart account. Only one benchmark or order batch can ru
         |
         |  office network or VPN only
         v
- +----------------------- Ubuntu 24.04 server -----------------------+
+ +------------------- Ubuntu 24.04 on AWS (shared) ------------------+
  |                                                                   |
- |  Nginx :443 (TLS, username + password)                            |
+ |  Nginx :443 (company SSL, username + password)                     |
  |        |   sets X-Remote-User and X-Proxy-Secret                  |
  |        v                                                          |
  |  Streamlit 127.0.0.1:8501 (service user tsbench)                  |
@@ -54,7 +54,7 @@ All users share one TradeSmart account. Only one benchmark or order batch can ru
  +--------|----------------------------------------------------------+
           |  HTTPS / WSS started by the server
           v
- Company NAT / firewall: leaves through the registered static public IP
+ AWS Elastic IP (or NAT Gateway): leaves through the registered static public IP
           |
           v
  TradeSmart / Kambala: v2api.tradesmartonline.in
@@ -88,8 +88,9 @@ registered static IP. Use one of these:
 
 | Setup | What to configure |
 |---|---|
-| Server behind NAT (the usual case) | A NAT/SNAT rule on the company firewall maps this server's outbound traffic to the static IP. Leave `TS_OUTBOUND_BIND_IP` empty. |
-| Server with several interfaces, with the static IP routed to one of them | Set `TS_OUTBOUND_BIND_IP` to the **local address assigned to that interface**. It must appear in `ip -brief addr`. If the public IP sits on a NAT device, this setting cannot use it; connections fail with "Cannot assign requested address". |
+| EC2 instance in a public subnet | Attach an **Elastic IP** to the instance. That address is the one to register. Leave `TS_OUTBOUND_BIND_IP` empty. |
+| EC2 instance in a private subnet | Traffic leaves through the **NAT Gateway's Elastic IP**. That address is the one to register, and other instances behind the same gateway share it. Leave `TS_OUTBOUND_BIND_IP` empty. |
+| Instance with several network interfaces | Set `TS_OUTBOUND_BIND_IP` to the **private address of the interface** that has the Elastic IP. It must appear in `ip -brief addr`. An Elastic IP itself never appears there, so don't use it here; connections would fail with "Cannot assign requested address". |
 
 Do not set `HTTP_PROXY` or `HTTPS_PROXY` in the service environment unless that proxy's public address is the
 registered IP. A proxy changes the source address that TradeSmart sees, and it also changes the measured latency.
@@ -123,33 +124,51 @@ ip -6 route show default
 If both of the last two commands show IPv6, API traffic may leave over IPv6 while the IP check uses IPv4. Ask the network
 team to resolve this before go-live.
 
-**If the network team uses policy routing,** they must confirm that both destinations use the same NAT rule:
+**If your VPC uses policy routing,** confirm that both destinations leave the same way:
 
 ```bash
 ip route get "$(getent ahostsv4 v2api.tradesmartonline.in | awk 'NR==1{print $1}')"
 ip route get "$(getent ahostsv4 api.ipify.org | awk 'NR==1{print $1}')"
 ```
 
-These commands show only the route on this server. The network team must also confirm the firewall's NAT rule covers
-`v2api.tradesmartonline.in` and `api.ipify.org`.
+These commands show only the route on this server. Also confirm in the VPC route tables that both destinations leave
+through the same Elastic IP or NAT Gateway.
 
 ---
 
 ## 3. Prerequisites
 
+### Applications to install
+
+The app is **Python only**. **PHP, Java, Node.js and a database server are not needed.** It stores its data in a local SQLite
+file. `install.sh` installs all of this, so nothing needs installing by hand:
+
+| Package | Why |
+|---|---|
+| `python3.12-venv`, `python3-pip` | Run the app in its own virtual environment. Ubuntu 24.04 includes Python 3.12. |
+| `git` | Download the code from GitHub |
+| `nginx` | Web server: SSL, login and access control. Already on your server, and your other sites are not changed. |
+| `apache2-utils` | `htpasswd`, for login accounts |
+| `sqlite3` | Database backups and restores |
+| `openssl`, `curl` | Generate the proxy secret; run health checks |
+
+Port `8501` on `127.0.0.1` must be free. The installer stops if another program uses it.
+
+### What each person provides
+
 | Item | Requirement | Provided by |
 |---|---|---|
-| Server | Suggested: 2 vCPU, 4 GB RAM, 20 GB disk. This is a suggestion, not a measured requirement. | System team |
-| Operating system | Ubuntu 24.04 with Python 3.12 | System team |
-| Static public outbound IP | See section 2. The value may arrive after install; orders stay blocked until it is set. | System team / network team, registered with TradeSmart by the owner |
-| Internal DNS / hostname | A name for the server, reachable from the office network and VPN (`SERVER_NAME`) | System team |
-| TLS certificate | Internal CA certificate preferred. A self-signed one is created by default. | System team |
-| Allowed networks | Office and VPN CIDRs (`ALLOWED_CIDRS`) | Owner and system team |
+| Server | Ubuntu 24.04 on AWS. Suggested spare capacity: 2 vCPU, 4 GB RAM, 20 GB disk. This is a suggestion, not a measured requirement. | System team |
+| Static public outbound IP | Elastic IP (section 2). The value may arrive after install; orders stay blocked until it is set. | System team, registered with TradeSmart by the owner |
+| Code folder | `/vns-work/code/tsolc.tradesmartonline.in`: empty, or not yet created | System team |
+| DNS | `tsolc.tradesmartonline.in` pointing to this server, reachable from the office network and VPN | System team |
+| SSL certificate | Company certificate (full chain) and private key for `tsolc.tradesmartonline.in` | System team |
+| Allowed networks | Office and VPN CIDRs, for the security group and the Nginx site file | Owner and system team |
 | GitHub access | Read-only deploy key added to the private repo | Key generated by system team, added by owner |
 | TradeSmart App Key | Value for `TS_APP_KEY` (secret) | Owner |
 | TradeSmart Secret Key | Value for `TS_SECRET_KEY` (secret) | Owner |
 | TradeSmart Client ID | Value for `TS_CLIENT_ID` (secret) | Owner |
-| Redirect URL | Registered in the TradeSmart API app; value for `TS_REDIRECT_URL` (section 6.2) | Owner registers it; system team supplies the address |
+| Redirect URL | `https://tsolc.tradesmartonline.in/callback`, registered in the TradeSmart API app | Owner |
 | Admin usernames | Value for `TS_ADMIN_USERS` | Owner |
 | Order usernames | Value for `TS_ORDER_USERS` | Owner |
 | Login accounts | Created with `manage-user.sh` | System team |
@@ -158,18 +177,21 @@ These commands show only the route on this server. The network team must also co
 
 ## 4. Network and firewall
 
+Configure these in the instance's **AWS security group**. The kit never changes UFW or any firewall.
+
 ### Inbound
 
 | Port | Protocol | From | Purpose |
 |---|---|---|---|
 | 443 | TCP | Office and VPN CIDRs | The app (HTTPS and WebSocket through Nginx) |
-| 80 | TCP | Office and VPN CIDRs | OAuth `/callback` and redirect to HTTPS |
+| 80 | TCP | Office and VPN CIDRs | TradeSmart `/callback` and redirect to HTTPS |
 | 22 | TCP | Admin hosts only | SSH |
 
-Port 8501 is not opened. Streamlit listens on 127.0.0.1 only.
+**Do not open port 8501.** Streamlit listens on 127.0.0.1 only.
 
-Nginx also applies `ALLOWED_CIDRS` on port 443. On port 80 it has no allow-list, because port 80 only sends redirects, so
-the firewall is what limits port 80. IPv4 only: Nginx does not listen on IPv6.
+The site file also applies the office/VPN list on port 443. Port 80 has no list because it only sends redirects, so the
+security group is what limits port 80. If other sites on this server need 80 or 443 open more widely, the `allow` list in
+the site file still protects this app on 443.
 
 ### Outbound
 
@@ -179,28 +201,13 @@ the firewall is what limits port 80. IPv4 only: Nginx does not listen on IPv6.
 | `api.ipify.org` (or your `TS_IP_CHECK_URL`) | 443 | Always | Outbound IP check. If blocked, orders are refused. |
 | `github.com` | 22 | Install and update | Code download with the deploy key |
 | `pypi.org`, `files.pythonhosted.org` | 443 | Install and update | Python packages |
-| Ubuntu mirrors (`archive.ubuntu.com`, `security.ubuntu.com` or your internal mirror) | 80, 443 | Install and patching | OS packages |
-| DNS and NTP servers | 53, 123 | Always | Name lookup and correct time |
+| Ubuntu mirrors | 80, 443 | Install and patching | OS packages |
+| DNS and NTP | 53, 123 | Always | Name lookup and correct time |
 
-UFW filters by IP address, and these hostnames can change address. If you need to filter outbound traffic by name, do
-it on the company firewall or proxy.
+### Load balancer
 
-### UFW commands [SYSTEM TEAM]
-
-Allow SSH before enabling UFW, or you may lock yourself out. Repeat the `443` and `80` lines for each office or VPN CIDR.
-
-```bash
-sudo ufw default deny incoming
-sudo ufw default allow outgoing
-sudo ufw allow from <admin-cidr> to any port 22 proto tcp
-sudo ufw allow from <office-or-vpn-cidr> to any port 443 proto tcp
-sudo ufw allow from <office-or-vpn-cidr> to any port 80 proto tcp
-sudo ufw enable
-sudo ufw status numbered
-```
-
-`install.sh` adds the `443` and `80` rules for `ALLOWED_CIDRS` itself, but it never adds an SSH rule and never turns UFW on
-unless you pass `ENABLE_UFW=1` with `SSH_ALLOWED_CIDRS`.
+This guide assumes browsers reach Nginx directly. **If an AWS load balancer sits in front of Nginx, tell the owner first.** The
+`allow` rules and the rate limit would see the load balancer's address instead of the user's, so the site file needs changing.
 
 ---
 
@@ -211,16 +218,22 @@ unless you pass `ENABLE_UFW=1` with `SSH_ALLOWED_CIDRS`.
 | Item | Path |
 |---|---|
 | Service user and group | `tsbench` |
-| Application | `/opt/tsbench/app` |
+| Application code (Git checkout) | `/vns-work/code/tsolc.tradesmartonline.in` |
 | Python virtual environment | `/opt/tsbench/venv` |
 | Configuration | `/etc/tsbench/tsbench.env` (root:tsbench, 0640) |
 | Data | `/var/lib/tsbench` (`benchmark.db`, `scriptmaster/`, `.access_token`, `api_run.lock`) |
 | Logs | `/var/log/tsbench` |
 | Backups | `/var/backups/tsbench` |
-| Nginx site | `/etc/nginx/sites-available/tsbench` |
+| Nginx site | `/etc/nginx/sites-available/tsolc.tradesmartonline.in` |
 | Nginx password file | `/etc/nginx/tsbench.htpasswd` |
 | Nginx proxy secret | `/etc/nginx/tsbench-proxy-secret.conf` |
-| TLS certificate and key | `/etc/nginx/ssl/tsbench.crt`, `/etc/nginx/ssl/tsbench.key` |
+| SSL certificate and key | Your own paths, set in the Nginx site file |
+
+**The code folder is not a document root.** The app runs as a service on `127.0.0.1:8501` and Nginx forwards requests to it.
+Never add a `root` pointing at the code folder, or the source code could be downloaded from the website.
+
+The installer makes the code folder `root:tsbench`, with no access for other users. The `tsbench` user must be able to enter its parent
+folders. If it can't, the installer stops and says what to do.
 
 ### 5.1 Create the deploy key [SYSTEM TEAM]
 
@@ -265,40 +278,28 @@ which is normal here.
 
 ```bash
 sudo git clone git@github.com:Yahska04/tradesmart-api-latency-benchmark.git /root/tsbench-bootstrap
-sudo bash /root/tsbench-bootstrap/deploy/install.sh SERVER_NAME=<hostname> ALLOWED_CIDRS=<cidr1>,<cidr2>
+sudo bash /root/tsbench-bootstrap/deploy/install.sh
 sudo rm -rf /root/tsbench-bootstrap
 ```
 
-| Input | Required | Meaning |
-|---|---|---|
-| `SERVER_NAME` | Yes | DNS name or IP address users open |
-| `ALLOWED_CIDRS` | Yes | Comma-separated IPv4 office and VPN networks. `0.0.0.0/0` is refused. |
-| `GIT_REF` | No | Branch, tag or commit. First install defaults to `main`. A re-run keeps the installed code unless this is given. |
-| `REPO_URL` | No | Repository URL. Default: the repo above |
-| `DEPLOY_KEY` | No | Path of the GitHub key. Default: `/root/.ssh/tsbench_deploy_key` |
-| `ENABLE_UFW` | No | `1` also turns UFW on, and then requires `SSH_ALLOWED_CIDRS`. Default: off. Not needed if you followed section 4. |
-| `SSH_ALLOWED_CIDRS` | With `ENABLE_UFW=1` | Comma-separated IPv4 networks allowed to SSH in, so you can't be locked out |
-| `SSH_PORT` | No | SSH port for that rule. Default: `22` |
+| Optional input | Meaning |
+|---|---|
+| `GIT_REF=<ref>` | Branch, tag or commit. First install defaults to `main`. A re-run keeps the installed code unless this is given. |
+| `REPO_URL=<url>` | Repository URL. Default: the repo above |
+| `DEPLOY_KEY=<path>` | Path of the GitHub key. Default: `/root/.ssh/tsbench_deploy_key` |
 
-The installer installs packages, creates the user and folders, clones the code to `/opt/tsbench/app`, and installs Python
-packages from the hash-checked `requirements.lock`. It creates the env file and proxy secret, a self-signed certificate,
-the Nginx site and the systemd units, and it enables the backup timer. It keeps existing configuration, secrets,
-certificates, logins and data.
+The installer installs packages, creates the `tsbench` user and folders, clones the code, and installs Python packages from the
+hash-checked `requirements.lock`. It creates the env file and proxy secret, copies the Nginx site file into `sites-available`, installs
+the systemd units and enables the backup timer. It keeps existing configuration, secrets, logins, data and your edited site file.
+
+**It is safe on a shared server. It does not:** enable or edit any Nginx site, remove the default site, create a certificate,
+or change the firewall.
 
 The first run leaves the service stopped, because the settings are still blank. Its summary lists what's missing, which is normal.
 
 If GitHub refuses the key, the installer prints a public key and exits with code 2. Add that key (step 5.2) and run it again.
 
-### 5.5 Check the firewall rules [SYSTEM TEAM]
-
-```bash
-sudo ufw status numbered
-```
-
-No rule for 22, 80 or 443 should show `Anywhere` in the **From** column. Make sure SSH is allowed from your admin network
-before enabling UFW (section 4).
-
-### 5.6 Fill in the configuration [SYSTEM TEAM with values from OWNER]
+### 5.5 Fill in the configuration [SYSTEM TEAM with values from OWNER]
 
 ```bash
 sudo nano /etc/tsbench/tsbench.env
@@ -309,7 +310,7 @@ sudo nano /etc/tsbench/tsbench.env
 | `TS_DEPLOYMENT` | `server` | Leave as set by the template |
 | `TS_ENVIRONMENT` | `live` | Leave as set by the template |
 | `TS_APP_KEY`, `TS_SECRET_KEY`, `TS_CLIENT_ID` | From the TradeSmart API app | Owner |
-| `TS_REDIRECT_URL` | `http://<server-ip>/callback` (section 6.2) | System team and owner |
+| `TS_REDIRECT_URL` | `https://tsolc.tradesmartonline.in/callback` | Leave as set by the template |
 | `TS_ADMIN_USERS` | Comma-separated login names, for example `alice,bob` | Owner |
 | `TS_ORDER_USERS` | Comma-separated login names | Owner |
 | `TS_AUTH_PROXY_SECRET` | Generated by `install.sh`, which copies it to Nginx | Leave as is (to change it, see section 9) |
@@ -318,39 +319,76 @@ sudo nano /etc/tsbench/tsbench.env
 | `TS_LOG_PATH` | `/var/log/tsbench/app.log` | Leave as set by the template |
 | `TS_TOKEN_FILE` | `/var/lib/tsbench/.access_token` | Leave as set by the template |
 | `TS_STATIC_IP` | Leave empty; an admin enters it in Settings | App admin |
-| `TS_OUTBOUND_BIND_IP` | Only for a multi-interface server (section 2) | Network team |
+| `TS_OUTBOUND_BIND_IP` | Only for an instance with several interfaces (section 2) | System team |
 
 Use `KEY=value` on one line, with no spaces around `=`. `.env.example` in the repo explains each variable.
 
 `TS_APP_KEY`, `TS_SECRET_KEY`, `TS_CLIENT_ID`, `TS_AUTH_PROXY_SECRET` and `TS_ADMIN_USERS` must all be set, or the kit's
 scripts won't start or restart the service.
 
-### 5.7 Create login accounts [SYSTEM TEAM]
+### 5.6 Create login accounts [SYSTEM TEAM]
 
 Run this once per user. It asks for the password, and also changes the password of an existing user. Use exactly the names
 listed in `TS_ADMIN_USERS` and `TS_ORDER_USERS`. Names may use letters, digits, dot, underscore and dash.
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/manage-user.sh add <username>
-sudo bash /opt/tsbench/app/deploy/manage-user.sh list
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh add <username>
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh list
 ```
+
+### 5.7 Configure and enable the Nginx site [SYSTEM TEAM]
+
+The virtual host is in the repo at `deploy/tsolc.tradesmartonline.in.conf`, and the installer has copied it to
+`/etc/nginx/sites-available/tsolc.tradesmartonline.in`. Edit that copy:
+
+```bash
+sudo nano /etc/nginx/sites-available/tsolc.tradesmartonline.in
+```
+
+Replace every `CHANGE_ME` value:
+
+| Placeholder | Replace with |
+|---|---|
+| `CHANGE_ME_SSL_CERTIFICATE_PATH` | Path of the company certificate (full chain, server certificate first) |
+| `CHANGE_ME_SSL_PRIVATE_KEY_PATH` | Path of its private key |
+| `CHANGE_ME_OFFICE_CIDR` | Office network, for example `203.0.113.0/24` |
+| `CHANGE_ME_VPN_CIDR` | VPN network. Add one `allow` line per extra network; delete this line if there is no VPN. |
+
+You may apply your own standards to the rest (logging, SSL ciphers, HTTP/2). **Keep these, or the app stops working:**
+
+- `proxy_set_header Upgrade` and `Connection` (WebSocket)
+- `proxy_set_header Host $http_host`
+- `auth_basic`, `proxy_set_header X-Remote-User $remote_user` and the `include` of `tsbench-proxy-secret.conf`
+- `proxy_set_header Authorization ""`, `proxy_read_timeout`, `proxy_send_timeout` and `proxy_buffering off`
+- `allow 127.0.0.1/32`, which `healthcheck.sh` uses
+
+Do not add a `root`. Then enable it:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/tsolc.tradesmartonline.in /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+The installer and `update.sh` never overwrite your edited copy. If a later update changes the repo's file, `update.sh` says so and you
+compare the two yourself.
 
 ### 5.8 Start the service and check it [SYSTEM TEAM]
 
 ```bash
 sudo systemctl start tsbench
 sudo systemctl status tsbench --no-pager
-sudo bash /opt/tsbench/app/deploy/healthcheck.sh
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh
 ```
 
-`healthcheck.sh` checks both services and the health endpoint, confirms Nginx asks for a login and ignores forged identity
-headers, and runs the self-check below. It exits with 0 only if everything passes.
+`healthcheck.sh` checks both services, the health endpoint and the site file. It also confirms Nginx asks for a login and ignores forged
+identity headers, and runs the self-check below. It exits with 0 only if everything passes.
 
 To run the self-check alone, use the service's user and environment. It sends no API requests and no credentials, and it
 never prints a secret. Use this exact form:
 
 ```bash
-sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/opt/tsbench/app /opt/tsbench/venv/bin/python -m src.doctor
+sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/vns-work/code/tsolc.tradesmartonline.in /opt/tsbench/venv/bin/python -m src.doctor
 ```
 
 Before first-time app setup, these two results are expected:
@@ -360,18 +398,6 @@ Before first-time app setup, these two results are expected:
 
 Every other line should be `PASS`. A `FAIL` must be fixed before handover.
 
-### 5.9 Replace the self-signed certificate [SYSTEM TEAM]
-
-Skip this only if the company accepts the self-signed certificate (see section 9). Put the server certificate first
-in the `.crt` file, followed by any intermediate certificates.
-
-```bash
-sudo install -o root -g root -m 0644 <your-fullchain.crt> /etc/nginx/ssl/tsbench.crt
-sudo install -o root -g root -m 0600 <your-private.key> /etc/nginx/ssl/tsbench.key
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
 ---
 
 ## 6. First-time app setup
@@ -380,7 +406,7 @@ Do this in order. The token step needs the redirect URL registered first. The or
 
 ### 6.1 Log in and enter the server IP [APP ADMIN]
 
-1. Open `https://<hostname>/` from the office network or VPN, and log in with your username and password.
+1. Open `https://tsolc.tradesmartonline.in/` from the office network or VPN, and log in with your username and password.
 2. Go to **Settings → Server IP**.
 3. Enter the registered static public IP in **Server static IP** and click **Save IP**.
 4. Confirm **Configured IP** and **Detected IP** match. Click **Check now** to re-test; otherwise the status refreshes about
@@ -388,29 +414,17 @@ Do this in order. The token step needs the redirect URL registered first. The or
 
 ### 6.2 Register the redirect URL [OWNER]
 
-Once the IP is saved, the same page shows the URL to register. Register it in the TradeSmart API app:
+Register this in the TradeSmart API app. The **Settings → Server IP** page shows the same value:
 
 ```text
-http://<server-ip>/callback
+https://tsolc.tradesmartonline.in/callback
 ```
 
-Set `TS_REDIRECT_URL` in `/etc/tsbench/tsbench.env` to the same URL, then restart the service.
+**What happens:** after login, TradeSmart sends the browser to `https://tsolc.tradesmartonline.in/callback?code=<one-time code>`. Nginx
+redirects that to `/Settings?code=<one-time code>`. If you're logged in as an admin, Settings shows **TradeSmart sent a login code**.
 
-**What happens:** after login, TradeSmart sends the browser to `http://<server-ip>/callback?code=<one-time code>`. Nginx
-on port 80 redirects that to `https://<server-ip>/Settings?code=<one-time code>`. If you're logged in as an admin, Settings shows **TradeSmart sent a
-login code**.
-
-**This only works if the admin's browser can reach that address.**
-
-- The page shows the registered **public** IP. The browser must be able to reach ports 80 and 443 on it, which needs an inbound
-  NAT rule from the office/VPN. The source address that Nginx then sees must be in `ALLOWED_CIDRS`. Agree this with the
-  network team. If it isn't allowed, use the paste fallback below; it doesn't need any inbound access on that address.
-- Opening the app at that address counts as a separate site in the browser. Expect another login prompt, and a certificate
-  warning unless the certificate also covers that IP. The token is shared, so it doesn't matter which address the admin used.
-- The code travels once over plain HTTP between the browser and Nginx. It works only once, and exchanging it needs the
-  Secret Key, which stays on the server.
-- The documentation we have doesn't say whether TradeSmart accepts `http://` URLs or IP addresses here. If registration is
-  refused, ask TradeSmart what it accepts. `https://<hostname>/callback` also reaches Settings.
+This works from the office network or VPN, because it's the admin's own browser that follows the redirect. If the redirect doesn't reach the
+app, use the paste fallback in section 6.3.
 
 ### 6.3 Generate the access token [APP ADMIN]
 
@@ -432,7 +446,7 @@ API calls report session errors, an admin generates a new token with the same st
 ### 6.4 Run the self-check [SYSTEM TEAM]
 
 ```bash
-sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/opt/tsbench/app /opt/tsbench/venv/bin/python -m src.doctor
+sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/vns-work/code/tsolc.tradesmartonline.in /opt/tsbench/venv/bin/python -m src.doctor
 ```
 
 All lines should now be `PASS`, including `Outbound IP matches static IP`. A `WARN` on order users is acceptable only if
@@ -478,7 +492,7 @@ case-sensitive, but Nginx logins are, so use one spelling everywhere.
 ### Add a user [SYSTEM TEAM]
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/manage-user.sh add <username>
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh add <username>
 ```
 
 To give a role, add the name to `TS_ADMIN_USERS` or `TS_ORDER_USERS` in `/etc/tsbench/tsbench.env`. Then check that no run is
@@ -491,7 +505,7 @@ sudo systemctl restart tsbench
 ### Remove a user [SYSTEM TEAM]
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/manage-user.sh remove <username>
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh remove <username>
 ```
 
 Also remove the name from both role lists. Check that no run is active, then restart the service. The restart also ends any
@@ -500,7 +514,7 @@ session the person still has open.
 ### List users [SYSTEM TEAM]
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/manage-user.sh list
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh list
 ```
 
 ---
@@ -535,9 +549,9 @@ journal under the server's own settings.
 ### 8.3 Update
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/update.sh
-sudo bash /opt/tsbench/app/deploy/update.sh <branch-tag-or-commit>
-sudo bash /opt/tsbench/app/deploy/healthcheck.sh
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh <branch-tag-or-commit>
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh
 ```
 
 `update.sh` takes a database backup first, installs the code and packages, runs the self-check and restarts the service. If the new
@@ -552,29 +566,35 @@ version crashes the self-check or doesn't come up healthy, it rolls back by itse
 
 `FORCE=1` skips the run check and **kills a running batch**, and it also discards local changes. Avoid it during market hours.
 
-If the output says the Nginx template changed, re-apply it (section 8.5).
+If the output says the Nginx site file changed, compare it with your live copy (section 8.5).
 
 ### 8.4 Roll back
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/update.sh rollback
-sudo bash /opt/tsbench/app/deploy/healthcheck.sh
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh rollback
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh
 ```
 
 This returns to the commit before the last update. It restores code and Python packages only. If the newer version
 changed the database, also restore the backup taken just before the update (section 8.6).
 
-### 8.5 Change allowed networks, or re-apply the Nginx config
+### 8.5 Change allowed networks or the Nginx site
 
-`/etc/nginx/sites-available/tsbench` is generated. Don't edit it by hand. Run the installer again, with the full list of networks.
-It keeps the installed code; use `update.sh` to move to newer code.
+Edit your live copy, then test and reload. Update the security group too (section 4).
 
 ```bash
-sudo bash /opt/tsbench/app/deploy/install.sh SERVER_NAME=<hostname> ALLOWED_CIDRS=<cidr1>,<cidr2>
+sudo nano /etc/nginx/sites-available/tsolc.tradesmartonline.in
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
-This also restarts the service unless a run is active. It adds firewall rules for the networks you list but doesn't remove
-old ones, so delete rules for any network you took away (`sudo ufw status numbered`, then `sudo ufw delete <number>`).
+To see how your copy differs from the repo's file:
+
+```bash
+sudo diff /etc/nginx/sites-available/tsolc.tradesmartonline.in /vns-work/code/tsolc.tradesmartonline.in/deploy/tsolc.tradesmartonline.in.conf
+```
+
+To change the code version, use `update.sh`. Re-running `install.sh` keeps the installed code and your site file.
 
 ### 8.6 Backups and restore
 
@@ -600,7 +620,7 @@ sudo chown tsbench:tsbench /var/lib/tsbench/benchmark.db
 sudo chmod 0640 /var/lib/tsbench/benchmark.db
 sudo -u tsbench sqlite3 /var/lib/tsbench/benchmark.db "PRAGMA integrity_check;"
 sudo systemctl start tsbench
-sudo bash /opt/tsbench/app/deploy/healthcheck.sh
+sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh
 ```
 
 The integrity check must print `ok`. The restore also brings back the server IP saved at backup time, so confirm it in Settings.
@@ -616,9 +636,9 @@ saved after the backup. That has two effects:
 | Check | Command or target | Healthy result |
 |---|---|---|
 | App process | `curl -fsS http://127.0.0.1:8501/_stcore/health` (on the server) | `ok` |
-| Full stack | `sudo bash /opt/tsbench/app/deploy/healthcheck.sh` | Exit code 0 |
+| Full stack | `sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/healthcheck.sh` | Exit code 0 |
 | Service state | `systemctl is-active tsbench` | `active` |
-| Certificate | `sudo openssl x509 -in /etc/nginx/ssl/tsbench.crt -noout -enddate` | Date is well in the future |
+| Certificate | `sudo openssl x509 -in <your-certificate-path> -noout -enddate` | Date is well in the future |
 | Disk | `df -h /var/lib/tsbench /var/backups/tsbench` | Space available |
 | Backup timer | `systemctl list-timers tsbench-backup.timer` | Next run listed |
 
@@ -668,7 +688,7 @@ Check again after the fix. An order user can click through **Order latency test 
 with the service's environment:
 
 ```bash
-sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/opt/tsbench/app /opt/tsbench/venv/bin/python -m src.recover_orders
+sudo systemd-run --pipe --wait --collect -p User=tsbench -p EnvironmentFile=/etc/tsbench/tsbench.env -p WorkingDirectory=/vns-work/code/tsolc.tradesmartonline.in /opt/tsbench/venv/bin/python -m src.recover_orders
 ```
 
 Exit code 0 means clean or nothing to do. Exit code 1 means someone must look at the printed lines. If it prints `Skipped`, a run holds the
@@ -702,7 +722,7 @@ sudo journalctl -u tsbench -b --no-pager | grep -E "ATTENTION|Open-order check"
 | Shared access token | `/var/lib/tsbench/.access_token` | tsbench, 0600 |
 | Proxy secret (Nginx side) | `/etc/nginx/tsbench-proxy-secret.conf` | root:root, 0640 |
 | User passwords (bcrypt hashes) | `/etc/nginx/tsbench.htpasswd` | root:www-data, 0640 |
-| TLS private key | `/etc/nginx/ssl/tsbench.key` | root, 0600 |
+| SSL private key | Your path, per company standard | Per company standard |
 | GitHub deploy key | `/root/.ssh/tsbench_deploy_key` | root, 0600 |
 
 Never commit `.env` or any file holding real values. `.gitignore` excludes `.env`. Database backups hold no token or keys,
@@ -718,8 +738,8 @@ change the Nginx template, keep this behaviour.
 
 **Network exposure.** Streamlit binds to 127.0.0.1:8501. Don't change that or open the port.
 
-**Self-signed certificate.** Browsers show a warning, and users must accept it. This trains people to click through warnings and
-doesn't protect against interception until the certificate is trusted. Prefer an internal CA certificate.
+**Code folder.** It holds source code and must never be served as files. The site file has no `root`, and the code folder isn't
+readable by other users. Nginx doesn't need to read it.
 
 **Basic auth.**
 
@@ -731,7 +751,7 @@ doesn't protect against interception until the certificate is trusted. Prefer an
   Chrome, Edge or Firefox. If Safari matters to you, verify it during acceptance.
 
 **Rotating the proxy secret.** Generate a value with `openssl rand -hex 32` and put it in `TS_AUTH_PROXY_SECRET` in
-`/etc/tsbench/tsbench.env`. Then run the installer command in section 8.5, which copies it to Nginx and restarts the service.
+`/etc/tsbench/tsbench.env`. Then run `sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/install.sh`, which copies it to Nginx, reloads Nginx and restarts the service.
 
 **OAuth callback.** TradeSmart's documented login has no `state` value, so the app can't prove a `/Settings?code=` link started from
 its own login button. That's why it never exchanges a code automatically: an admin must press **Get access token**, and should do so only
@@ -747,14 +767,19 @@ in front through Nginx `auth_request`, set `X-Remote-User` from the SSO user nam
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Login box keeps coming back (401 loop) | Wrong password, user not in the password file, or Nginx can't read the file | `sudo bash /opt/tsbench/app/deploy/manage-user.sh list`. Reset the password. Check `/var/log/nginx/error.log`. |
-| 403 from Nginx | Client address is outside `ALLOWED_CIDRS` | Check the client's VPN. Change the allowed networks with the command in section 8.5. |
-| 429 from Nginx | Request rate limit reached, or many users share one source address | Wait and reload. If it recurs, raise the limit in `deploy/nginx-tsbench.conf.template` and re-apply it (section 8.5). |
-| "Access denied" and "did not come through the login proxy" | `X-Proxy-Secret` doesn't match `TS_AUTH_PROXY_SECRET`, or someone is calling port 8501 directly | Re-run the command in section 8.5, which copies the env value to Nginx. |
-| "Access denied", `TS_AUTH_PROXY_SECRET` not configured | The variable is empty in the env file | Re-run the command in section 8.5, which generates one. |
-| "The login proxy did not identify a user" | Nginx isn't sending `X-Remote-User` | Re-apply the kit's Nginx site (section 8.5). |
-| "Connection error" banner, or the page spins forever | WebSocket `/_stcore/stream` fails through Nginx. Often Safari, an intermediate proxy or a changed Nginx config. | Try Chrome, Edge or Firefox. Re-apply the kit's Nginx site (section 8.5). Check `/var/log/nginx/error.log`. |
-| Redirect after TradeSmart login shows a connection error | The browser can't reach `<server-ip>` on port 80 or 443 (section 6.2) | Use the paste fallback (section 6.3). |
+| Login box keeps coming back (401 loop) | Wrong password, user not in the password file, or Nginx can't read the file | `sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh list`. Reset the password. Check `/var/log/nginx/error.log`. |
+| 403 from Nginx | Client address is not in the `allow` list of the site file | Check the client's VPN. Change the allowed networks (section 8.5). |
+| 429 from Nginx | Request rate limit reached, or many users share one source address | Wait and reload. If it recurs, raise the limit in the site file (section 8.5). |
+| "Access denied" and "did not come through the login proxy" | `X-Proxy-Secret` doesn't match `TS_AUTH_PROXY_SECRET`, or someone is calling port 8501 directly | Run `install.sh` again, which copies the env value to Nginx and reloads it. |
+| "Access denied", `TS_AUTH_PROXY_SECRET` not configured | The variable is empty in the env file | Run `install.sh` again, which generates one. |
+| "The login proxy did not identify a user" | Nginx isn't sending `X-Remote-User` | Restore the required lines in the site file (step 5.7). |
+| "Connection error" banner, or the page spins forever | WebSocket `/_stcore/stream` fails through Nginx. Often Safari, an intermediate proxy or a changed Nginx config. | Try Chrome, Edge or Firefox. Check the required lines in the site file (step 5.7). Check `/var/log/nginx/error.log`. |
+| Redirect after TradeSmart login shows a connection error | The browser can't reach `tsolc.tradesmartonline.in`, often because the VPN is off | Connect to the VPN, or use the paste fallback (section 6.3). |
+| `nginx -t` fails on `CHANGE_ME` | Placeholders are still in the site file | Replace them (step 5.7). |
+| `nginx -t` fails with a duplicate variable or zone | Another site defines the same name. The kit's names all start with `tsolc_`, so check any changes you made. | Rename the duplicate. |
+| The other site's page appears at this address | DNS or `server_name` doesn't match, or the site isn't enabled | Check DNS and `sudo nginx -T \| grep tsolc`. |
+| Installer stops: port 8501 is already used | Another program on this shared server uses it | Free the port. To use another, the unit, site file and `lib.sh` must all change together; ask the owner. |
+| Installer stops: `tsbench` can't read the code folder | A parent folder blocks it | Allow entry, for example `sudo chmod o+x /vns-work /vns-work/code`. |
 | 502 Bad Gateway | Streamlit isn't running | `sudo systemctl status tsbench`. `sudo journalctl -u tsbench -n 100 --no-pager`. `curl -fsS http://127.0.0.1:8501/_stcore/health`. |
 | Orders blocked: static IP "has not been set yet" | Nobody has entered the IP | [APP ADMIN] Settings → Server IP. |
 | Orders blocked: traffic "leaves from X, but the static IP is set to Y" | Routing or NAT is wrong, or the saved IP is wrong | Compare with `curl -4 -s https://api.ipify.org`. Fix the NAT or correct the IP (section 2). Do not turn off enforcement to get around this. |
@@ -766,7 +791,7 @@ in front through Nginx `auth_request`, set `X-Remote-User` from the SSO user nam
 | "A run started by X is running" | Another benchmark or batch is running. Only one runs at a time. | Wait, or ask X to stop it. Don't delete the lock file. If the process died, the lock has already been released. |
 | New order batch refused because test orders are unconfirmed | An earlier order couldn't be confirmed closed | See `ATTENTION` in section 8.8. Use **Order latency test → Open test orders**. |
 | `ATTENTION` in the journal, but the service is running | `src.recover_orders` reported a problem. By design, this doesn't stop the service. | See section 8.8. |
-| Service fails to start at the `ExecStartPre` stage | A failure of `src.recover_orders` itself is ignored, so look at the setup: a missing `/etc/tsbench/tsbench.env`, `tsbench` user, `/opt/tsbench/app`, or a folder in `ReadWritePaths`. A very slow check can also hit the 180 s start timeout. | `sudo journalctl -u tsbench -b --no-pager`, and look for `Failed at step` or `Failed to load environment files`. Fix it, or re-run the command in section 8.5. |
+| Service fails to start at the `ExecStartPre` stage | A failure of `src.recover_orders` itself is ignored, so look at the setup: a missing `/etc/tsbench/tsbench.env`, `tsbench` user, `/vns-work/code/tsolc.tradesmartonline.in`, or a folder in `ReadWritePaths`. A very slow check can also hit the 180 s start timeout. | `sudo journalctl -u tsbench -b --no-pager`, and look for `Failed at step` or `Failed to load environment files`. Fix it, or run `install.sh` again. |
 | Service stops retrying ("start request repeated too quickly") | More than 10 failed starts in 5 minutes | Fix the cause, then `sudo systemctl reset-failed tsbench && sudo systemctl start tsbench`. |
 | `update.sh` exits with code 3 | A run is active | Try again when the run ends. |
 | "Read-only file system" errors in the journal | `ProtectSystem` in the unit allows writes only to the data and log folders, and a path setting points elsewhere | Keep `TS_DB_PATH`, `TS_LOG_PATH` and `TS_TOKEN_FILE` under `/var/lib/tsbench` and `/var/log/tsbench`. Don't loosen the unit. |
@@ -779,13 +804,15 @@ in front through Nginx `auth_request`, set `X-Remote-User` from the SSO user nam
 
 **System team**
 
-- [ ] Server meets section 3, and UFW rules are applied (section 4)
-- [ ] `sudo ufw status numbered` shows no `Anywhere` rule for 22, 80 or 443 (step 5.5)
-- [ ] After `curl -4 -s https://api.ipify.org` matches, the network team confirms TradeSmart traffic takes the same route
+- [ ] Server meets section 3, and the security group matches section 4
+- [ ] Other sites on this server still work
+- [ ] No `CHANGE_ME` left in the Nginx site file, and it has no `root`
+- [ ] `https://tsolc.tradesmartonline.in/deploy/install.sh` does not return a file
+- [ ] After `curl -4 -s https://api.ipify.org` matches, confirm TradeSmart traffic takes the same route
 - [ ] `curl -4 -s https://api.ipify.org` returns the registered static IP
-- [ ] Network team confirms the NAT or routing for `v2api.tradesmartonline.in` and `api.ipify.org`
+- [ ] VPC routing confirmed for `v2api.tradesmartonline.in` and `api.ipify.org`
 - [ ] `/etc/tsbench/tsbench.env` is filled in, owned root:tsbench, mode 0640
-- [ ] Trusted certificate installed, or self-signed accepted by the company in writing
+- [ ] Company SSL certificate installed; the browser shows no warning
 - [ ] Login works from the office network and from VPN
 - [ ] Access from outside the allowed networks is refused
 - [ ] `curl http://<server>:8501` from another host fails
@@ -812,19 +839,20 @@ in front through Nginx `auth_request`, set `X-Remote-User` from the SSO user nam
 **Tested, off Ubuntu:**
 
 - The automated test suite on Python 3.12 and 3.13, with a mocked network and no real TradeSmart calls.
-- The Nginx template on Nginx 1.24.0 (Ubuntu 24.04's version) running on Windows, with plain-text test passwords: login, forged
-  headers, allow-list, TLS versions, `/callback` redirect, rate limit, and the live WebSocket through a real browser.
-- A full rehearsal through that Nginx against a mock TradeSmart: role checks, entering the static IP in Settings, the OAuth code
+- `deploy/tsolc.tradesmartonline.in.conf` on Nginx 1.24.0 (Ubuntu 24.04's version) running on Windows, with a test certificate and plain-text test
+  passwords, beside a second site defining the common `$connection_upgrade` name.
+- A full rehearsal through that Nginx against a mock TradeSmart: role checks, entering the static IP in Settings, the login code
   reaching the token exchange intact, a 16-order batch, an IP change refusing orders at send time, no user or proxy headers reaching the API,
   and a hard kill mid-burst with 8 orders open, all cancelled by `src.recover_orders`.
-- `backup.sh` with real `sqlite3`. ShellCheck and `bash -n` on all scripts. `requirements.lock` resolves to Linux wheels with hashes.
-- `install.sh`, `update.sh` (including auto-rollback) and `manage-user.sh` only with stubbed system commands.
+- ShellCheck and `bash -n` on all scripts. `requirements.lock` resolves to Linux wheels with hashes.
+- `install.sh`, `update.sh` (including auto-rollback) and `manage-user.sh` only in a sandbox with stubbed system commands, which also
+  confirmed other Nginx sites are left alone.
 
 **Not tested, because no Ubuntu machine was available:**
 
-- A real install: `apt`, `systemd` units and hardening, `systemd-run`, `flock`, bcrypt logins, `ufw`, `healthcheck.sh`, and the deploy key against GitHub.
+- A real install: `apt`, `systemd` units and hardening, `systemd-run`, `flock`, bcrypt logins, `healthcheck.sh`, and the deploy key against GitHub.
 - Clean shutdown on `SIGTERM`. The open-order check at the next start is the backstop for this.
-- Behaviour behind your real NAT, and any request against the live TradeSmart API from this server.
+- Your AWS networking, the company certificate, and any request against the live TradeSmart API from this server.
 
 Treat the first install as validation, and report anything that differs from this guide to the owner.
 
@@ -834,7 +862,8 @@ Treat the first install as validation, and report anything that differs from thi
 
 | Path | What it is |
 |---|---|
-| `deploy/install.sh` | Install or re-apply. Inputs: `SERVER_NAME`, `ALLOWED_CIDRS`, optional `GIT_REF`, `REPO_URL`, `DEPLOY_KEY`, `ENABLE_UFW`, `SSH_ALLOWED_CIDRS`, `SSH_PORT` |
+| `deploy/tsolc.tradesmartonline.in.conf` | **Nginx virtual host.** The system team adds the certificate paths and allowed networks. |
+| `deploy/install.sh` | Install or re-apply. Optional inputs: `GIT_REF`, `REPO_URL`, `DEPLOY_KEY` |
 | `deploy/update.sh [ref\|rollback]` | Update or roll back; automatic backup and rollback |
 | `deploy/backup.sh` | Database backup, run through `tsbench-backup.service` |
 | `deploy/manage-user.sh add\|remove <username>`, `list` | Manage Nginx logins |
@@ -844,7 +873,6 @@ Treat the first install as validation, and report anything that differs from thi
 | `requirements.txt`, `requirements-dev.txt` | Runtime packages; runtime plus test tools for developers |
 | `deploy/tsbench.service` | Main systemd unit, with the `ExecStartPre` open-order check |
 | `deploy/tsbench-backup.service`, `deploy/tsbench-backup.timer` | Scheduled backup |
-| `deploy/nginx-tsbench.conf.template` | Nginx site template |
 | `deploy/tsbench.env.example` | Template for `/etc/tsbench/tsbench.env` |
 | `.env.example` | Explains every variable (local and server) |
 | `src/doctor.py` | Self-check: `python -m src.doctor` |

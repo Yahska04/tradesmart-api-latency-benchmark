@@ -1,25 +1,20 @@
 #!/usr/bin/env bash
 # Install or re-apply the TradeSmart Latency Benchmark on Ubuntu 24.04. Safe to run again: existing
-# configuration, secrets, certificates, logins and data are kept.
+# configuration, secrets, logins, data and the live Nginx site file are kept.
 #
-#   sudo SERVER_NAME=bench.example.com ALLOWED_CIDRS=203.0.113.0/24,198.51.100.7 bash deploy/install.sh
-#   sudo bash deploy/install.sh SERVER_NAME=203.0.113.10 ALLOWED_CIDRS=198.51.100.0/24 GIT_REF=main
+#   sudo bash deploy/install.sh
+#   sudo bash deploy/install.sh GIT_REF=v1.2.0
 #
-# Required:
-#   SERVER_NAME     DNS name or IP address users open.
-#   ALLOWED_CIDRS   Comma-separated IPv4 CIDRs allowed to reach the app. 0.0.0.0/0 is refused
-#                   unless ALLOW_ANYWHERE=1.
+# Designed for a server shared with other sites. It never enables, edits or removes any Nginx site, never creates
+# a certificate and never changes the firewall. It copies this app's site file into sites-available once; the
+# system team fills in the certificate and allowed networks and enables it (docs/DEPLOYMENT.md, step 5.7).
+#
 # Optional:
 #   GIT_REF         Branch, tag or commit. First install: default main. Re-run: keeps the installed code unless
 #                   given (use update.sh to move to newer code; it takes a backup and can roll back).
 #   REPO_URL        Default: the project's GitHub repository.
 #   DEPLOY_KEY      SSH key for GitHub (default /root/.ssh/tsbench_deploy_key). Generated if needed: the script
 #                   then prints the public key to add to GitHub and asks you to run it again.
-#   ENABLE_UFW=1    Also turn the firewall on. Requires SSH_ALLOWED_CIDRS, so SSH can't be locked out.
-#   SSH_ALLOWED_CIDRS  Comma-separated IPv4 CIDRs allowed to SSH in. Only used with ENABLE_UFW=1.
-#   SSH_PORT        SSH port for that rule (default 22).
-#
-# Only needs deploy/ on the server for the first run: everything else comes from the Git checkout.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,20 +27,14 @@ parse_args() {
     local arg
     for arg in "$@"; do
         case "$arg" in
-            SERVER_NAME=* | ALLOWED_CIDRS=* | ALLOW_ANYWHERE=* | GIT_REF=* | REPO_URL=* | DEPLOY_KEY=* | ENABLE_UFW=* | SSH_ALLOWED_CIDRS=* | SSH_PORT=*)
+            GIT_REF=* | REPO_URL=* | DEPLOY_KEY=*)
                 export "${arg?}"
                 ;;
             *) die "Unknown argument: $arg (use KEY=value; see the top of this script)" ;;
         esac
     done
-    SERVER_NAME="${SERVER_NAME:-}"
-    ALLOWED_CIDRS="${ALLOWED_CIDRS:-}"
-    ALLOW_ANYWHERE="${ALLOW_ANYWHERE:-0}"
     GIT_REF="${GIT_REF:-}"
     REPO_URL="${REPO_URL:-$DEFAULT_REPO_URL}"
-    ENABLE_UFW="${ENABLE_UFW:-0}"
-    SSH_ALLOWED_CIDRS="${SSH_ALLOWED_CIDRS:-}"
-    SSH_PORT="${SSH_PORT:-22}"
 }
 
 check_platform() {
@@ -61,17 +50,10 @@ check_platform() {
     [[ "$os_version" == "24.04" ]] || warn "Written for Ubuntu 24.04; found $os_version."
 }
 
-check_inputs() {
-    [[ -n "$SERVER_NAME" ]] || die "SERVER_NAME is required (DNS name or IP address)."
-    [[ "$SERVER_NAME" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] || die "SERVER_NAME is not a valid name or IP address."
-    [[ -n "$ALLOWED_CIDRS" ]] || die "ALLOWED_CIDRS is required, for example ALLOWED_CIDRS=203.0.113.0/24."
-    command -v python3 >/dev/null || die "python3 is required (it is part of Ubuntu Server)."
-    CIDR_LINES="$(normalize_cidrs "$ALLOWED_CIDRS" "$ALLOW_ANYWHERE")" || die "ALLOWED_CIDRS rejected."
-    SSH_CIDR_LINES=""
-    if [[ "$ENABLE_UFW" == "1" ]]; then
-        [[ -n "$SSH_ALLOWED_CIDRS" ]] || die "ENABLE_UFW=1 needs SSH_ALLOWED_CIDRS, or SSH access would be lost."
-        [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || die "SSH_PORT must be a number."
-        SSH_CIDR_LINES="$(normalize_cidrs "$SSH_ALLOWED_CIDRS" 0)" || die "SSH_ALLOWED_CIDRS rejected."
+# Another app on this shared server may already use the port. Stop before changing anything.
+check_port_free() {
+    if ss -ltnH "sport = :$APP_PORT" 2>/dev/null | grep -q . && ! systemctl is-active --quiet tsbench.service; then
+        die "Port $APP_PORT is already used by another program on this server. Free it first."
     fi
 }
 
@@ -79,7 +61,7 @@ install_packages() {
     log "Installing system packages"
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
-    apt-get install -y -qq python3.12-venv python3-pip git nginx apache2-utils sqlite3 openssl ufw curl
+    apt-get install -y -qq python3.12-venv python3-pip git nginx apache2-utils sqlite3 openssl curl
 }
 
 create_user_and_dirs() {
@@ -89,6 +71,7 @@ create_user_and_dirs() {
         || useradd --system --gid "$SERVICE_USER" --home-dir "$DATA_DIR" --no-create-home \
             --shell /usr/sbin/nologin "$SERVICE_USER"
     install -d -o root -g "$SERVICE_USER" -m 0750 "$OPT_DIR" "$ETC_DIR"
+    mkdir -p "$(dirname "$APP_DIR")"   # an existing company folder keeps its owner and permissions
     install -d -o "$SERVICE_USER" -g "$SERVICE_USER" -m 0750 "$DATA_DIR" "$LOG_DIR" "$BACKUP_DIR_DEFAULT"
     chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR"
 }
@@ -126,18 +109,22 @@ checkout_app() {
     elif [[ -e "$APP_DIR" ]] && [[ -n "$(ls -A "$APP_DIR")" ]]; then
         die "$APP_DIR exists and is not a Git checkout. Move it away and run this again."
     else
+        # Git refuses to work as root in a folder another user owns, so an empty pre-created folder is taken over first.
+        [[ ! -d "$APP_DIR" ]] || chown "root:$SERVICE_USER" "$APP_DIR"
         git clone --quiet --origin origin "$REPO_URL" "$APP_DIR"
     fi
     local commit
     if [[ -z "$GIT_REF" ]] && git -C "$APP_DIR" rev-parse --verify --quiet HEAD >/dev/null \
-        && [[ -f "$APP_DIR/deploy/nginx-tsbench.conf.template" ]]; then
+        && [[ -f "$APP_DIR/$NGINX_SITE_SOURCE" ]]; then
         commit="$(git -C "$APP_DIR" rev-parse HEAD)"   # a re-run keeps the installed code
     else
         commit="$(resolve_ref "${GIT_REF:-main}")"
     fi
     git -C "$APP_DIR" checkout --quiet --force --detach "$commit"
     fix_app_permissions
-    [[ -f "$APP_DIR/deploy/nginx-tsbench.conf.template" ]] || die "Commit $commit has no deploy/ directory."
+    [[ -f "$APP_DIR/$NGINX_SITE_SOURCE" ]] || die "Commit $commit has no $NGINX_SITE_SOURCE."
+    runuser -u "$SERVICE_USER" -- test -r "$APP_DIR/app.py" \
+        || die "User $SERVICE_USER can't read $APP_DIR. Allow it to enter the parent folders (for example: chmod o+x /vns-work /vns-work/code), then run this again."
 }
 
 install_python_env() {
@@ -186,67 +173,24 @@ write_secret_snippet() {
     mv -f "$tmp" "$SECRET_SNIPPET"
 }
 
-ensure_tls_cert() {
-    install -d -o root -g root -m 0750 "$TLS_DIR"
-    if [[ -f "$TLS_CERT" && -f "$TLS_KEY" ]]; then
-        log "Keeping existing TLS certificate"
-        return 0
-    fi
-    [[ ! -e "$TLS_CERT" && ! -e "$TLS_KEY" ]] || die "Only one of $TLS_CERT and $TLS_KEY exists. Fix or remove it, then run this again."
-    log "Creating a self-signed TLS certificate for $SERVER_NAME"
-    if ! (umask 077 && make_self_signed_cert "$SERVER_NAME" "$TLS_CERT" "$TLS_KEY"); then
-        rm -f "$TLS_CERT" "$TLS_KEY"
-        die "Could not create the TLS certificate."
-    fi
-    chmod 0644 "$TLS_CERT"
-    chmod 0600 "$TLS_KEY"
-}
-
+# Copy the site file once and prepare the files it includes. Only this app's files are touched.
 configure_nginx() {
-    log "Configuring Nginx"
-    # Nginx workers read the password file on each login, so it must be readable by www-data.
+    log "Preparing Nginx files for $SERVER_NAME"
     [[ -f "$HTPASSWD_FILE" ]] || : >"$HTPASSWD_FILE"
     chown root:www-data "$HTPASSWD_FILE"
     chmod 0640 "$HTPASSWD_FILE"
-
-    local previous=""
-    if [[ -f "$NGINX_SITE" ]]; then
-        previous="$(mktemp)"
-        cp -p "$NGINX_SITE" "$previous"
-    fi
-    render_nginx_conf "$APP_DIR/deploy/nginx-tsbench.conf.template" "$SERVER_NAME" "$CIDR_LINES" >"$NGINX_SITE"
-    chmod 0644 "$NGINX_SITE"
-    ln -sfn "$NGINX_SITE" "$NGINX_SITE_LINK"
-    if ! nginx -t; then
-        if [[ -n "$previous" ]]; then
-            mv -f "$previous" "$NGINX_SITE"
-        else
-            rm -f "$NGINX_SITE" "$NGINX_SITE_LINK"
-        fi
-        die "The Nginx configuration failed its test; the previous site was restored."
-    fi
-    [[ -z "$previous" ]] || rm -f "$previous"
-    rm -f /etc/nginx/sites-enabled/default
-    systemctl enable --quiet nginx
-    if systemctl is-active --quiet nginx; then
-        systemctl reload nginx
+    if [[ ! -f "$NGINX_SITE" ]]; then
+        install -o root -g root -m 0644 "$APP_DIR/$NGINX_SITE_SOURCE" "$NGINX_SITE"
     else
-        systemctl start nginx
+        log "Keeping existing $NGINX_SITE"
     fi
-}
-
-configure_firewall() {
-    # Web ports from the allowed networks only. SSH is touched only when enabling the firewall here.
-    local cidr
-    while IFS= read -r cidr; do
-        ufw allow from "$cidr" to any port 443 proto tcp >/dev/null
-        ufw allow from "$cidr" to any port 80 proto tcp >/dev/null
-    done <<<"$CIDR_LINES"
-    if [[ "$ENABLE_UFW" == "1" ]]; then
-        while IFS= read -r cidr; do
-            ufw allow from "$cidr" to any port "$SSH_PORT" proto tcp >/dev/null
-        done <<<"$SSH_CIDR_LINES"
-        ufw --force enable >/dev/null
+    # A rotated proxy secret only takes effect after a reload, and only if the whole config is valid.
+    if [[ -e "$NGINX_SITE_LINK" ]] && systemctl is-active --quiet nginx; then
+        if nginx -t >/dev/null 2>&1; then
+            systemctl reload nginx
+        else
+            warn "nginx -t failed, so Nginx was not reloaded. Run: sudo nginx -t"
+        fi
     fi
 }
 
@@ -279,20 +223,19 @@ start_service() {
 }
 
 print_summary() {
-    local users ufw_state
+    local users site_state="enabled"
     users="$(grep -c . "$HTPASSWD_FILE" || true)"
-    ufw_state="$(ufw status | sed -n 1p)"
+    [[ -e "$NGINX_SITE_LINK" ]] || site_state="NOT enabled yet"
     cat <<EOF
 
 --------------------------------------------------------------------------------
 TradeSmart Latency Benchmark
   App code:      $APP_DIR ($(git -C "$APP_DIR" rev-parse --short HEAD))
   Config:        $ENV_FILE
+  Nginx site:    $NGINX_SITE ($site_state)
   URL:           https://$SERVER_NAME/
-  Allowed:       $(printf '%s' "$CIDR_LINES" | tr '\n' ' ')
   Service:       $SERVICE_STATE
   Login users:   $users
-  Firewall:      $ufw_state
 EOF
     local step=1
     printf '\nNext steps:\n'
@@ -304,34 +247,32 @@ EOF
         printf '  %d. Add a login: sudo bash %s/deploy/manage-user.sh add <username>\n' "$step" "$APP_DIR"
         step=$((step + 1))
     fi
+    if [[ ! -e "$NGINX_SITE_LINK" ]]; then
+        printf '  %d. Replace the CHANGE_ME values in %s, then enable it:\n' "$step" "$NGINX_SITE"
+        printf '       sudo ln -s %s %s && sudo nginx -t && sudo systemctl reload nginx\n' "$NGINX_SITE" "$NGINX_SITE_LINK"
+        step=$((step + 1))
+    fi
     if [[ -n "$MISSING" ]]; then
         printf '  %d. Start the app: sudo systemctl start tsbench\n' "$step"
         step=$((step + 1))
     fi
     printf '  %d. Check everything: sudo bash %s/deploy/healthcheck.sh\n' "$step" "$APP_DIR"
     step=$((step + 1))
-    printf '  %d. Set TS_REDIRECT_URL to the redirect registered with TradeSmart, for example https://%s/callback\n' "$step" "$SERVER_NAME"
-    step=$((step + 1))
     printf '  %d. As an admin, open Settings and set the static IP registered with TradeSmart.\n' "$step"
-    if [[ "$ufw_state" != *" active"* ]]; then
-        printf '\nThe firewall is off. Rules for 80 and 443 from the allowed networks are ready. Add an SSH rule first\n(sudo ufw allow from <admin-cidr> to any port 22 proto tcp), then run: sudo ufw enable\n'
-    fi
     printf -- '--------------------------------------------------------------------------------\n'
 }
 
 main() {
     parse_args "$@"
     check_platform
-    check_inputs
+    check_port_free
     install_packages
     create_user_and_dirs
     checkout_app
     install_python_env
     configure_env_file
     write_secret_snippet
-    ensure_tls_cert
     configure_nginx
-    configure_firewall
     install_systemd_units
     start_service
     print_summary

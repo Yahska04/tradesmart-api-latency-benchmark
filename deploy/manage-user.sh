@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Manage Nginx logins.
 #
-#   sudo bash /opt/tsbench/app/deploy/manage-user.sh add <username>      add a user or change a password (prompts)
-#   sudo bash /opt/tsbench/app/deploy/manage-user.sh remove <username>
-#   sudo bash /opt/tsbench/app/deploy/manage-user.sh list
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh add <username>      add a user or change a password (prompts)
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh remove <username>
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/manage-user.sh list
 #
 # Nginx reads the password file on every request, so no reload is needed.
 set -euo pipefail

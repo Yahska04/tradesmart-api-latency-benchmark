@@ -6,7 +6,7 @@ Type=oneshot
 User=tsbench
 Group=tsbench
 UMask=0027
-ExecStart=/bin/bash /opt/tsbench/app/deploy/backup.sh
+ExecStart=/bin/bash /vns-work/code/tsolc.tradesmartonline.in/deploy/backup.sh
 Nice=10
 
 NoNewPrivileges=true

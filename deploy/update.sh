@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Update the app to a branch, tag or commit, and roll back automatically if it doesn't come up healthy.
 #
-#   sudo bash /opt/tsbench/app/deploy/update.sh               update to main
-#   sudo bash /opt/tsbench/app/deploy/update.sh v1.2.0        update to a branch, tag or commit
-#   sudo bash /opt/tsbench/app/deploy/update.sh rollback      go back to the commit before the last update
-#   sudo FORCE=1 bash /opt/tsbench/app/deploy/update.sh       update even during a run (the run is killed)
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh               update to main
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh v1.2.0        update to a branch, tag or commit
+#   sudo bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh rollback      go back to the commit before the last update
+#   sudo FORCE=1 bash /vns-work/code/tsolc.tradesmartonline.in/deploy/update.sh       update even during a run (the run is killed)
 #
 # Rollback restores code and Python packages only. A database backup is taken before every update
 # (in /var/backups/tsbench) in case a new version changed the database.
@@ -130,8 +130,8 @@ main() {
     if [[ "$previous" != "$target" ]]; then
         printf '%s\n' "$previous" >"$PREVIOUS_COMMIT_FILE"
     fi
-    if ! git -C "$APP_DIR" diff --quiet "$previous" "$target" -- deploy/nginx-tsbench.conf.template; then
-        warn "The Nginx template changed in this update. Run install.sh again to apply it."
+    if ! git -C "$APP_DIR" diff --quiet "$previous" "$target" -- "$NGINX_SITE_SOURCE"; then
+        warn "The Nginx site file changed in this update. Your live copy was not touched; compare it with $APP_DIR/$NGINX_SITE_SOURCE."
     fi
     log "Now on ${target:0:12} (previous: ${previous:0:12}). To go back: sudo bash $APP_DIR/deploy/update.sh rollback"
 }

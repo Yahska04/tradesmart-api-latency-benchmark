@@ -9,7 +9,7 @@ StartLimitBurst=10
 Type=simple
 User=tsbench
 Group=tsbench
-WorkingDirectory=/opt/tsbench/app
+WorkingDirectory=/vns-work/code/tsolc.tradesmartonline.in
 EnvironmentFile=/etc/tsbench/tsbench.env
 Environment=HOME=/var/lib/tsbench
 Environment=PYTHONUNBUFFERED=1
